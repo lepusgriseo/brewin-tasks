@@ -1,0 +1,1145 @@
+/* ============================================================================
+   Brewin Planner — stylesheet
+   Theme-aware via Obsidian CSS variables. Layout metrics that the view code
+   depends on (must not change without the .ts): time-grid hour = 42px,
+   all-day bar lane = 20px, month day-number row = 20px.
+   ============================================================================ */
+
+/* ── Shared primitives ───────────────────────────────────────────────────── */
+.brewin-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 4px 0 8px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: var(--background-primary);
+}
+.brewin-toolbar button {
+  font-size: var(--font-ui-small);
+  padding: 4px 10px;
+}
+.brewin-context-filter { margin-left: auto; }
+
+.brewin-section-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 16px 0 4px;
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.brewin-section-header.brewin-overdue { color: var(--text-error); }
+.brewin-count {
+  font-size: 0.85em;
+  font-weight: 600;
+  min-width: 18px;
+  text-align: center;
+  padding: 0 6px;
+  border-radius: 9px;
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+  text-transform: none;
+}
+.brewin-collapsed { display: none; }
+
+.brewin-date-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-accent);
+  font-weight: 600;
+  margin: 10px 0 2px;
+}
+.brewin-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 32px 12px;
+  font-size: var(--font-ui-small);
+}
+.brewin-hidden { display: none !important; }
+.brewin-disabled { opacity: 0.45; pointer-events: none; }
+
+/* ── Tasks dashboard ─────────────────────────────────────────────────────── */
+.brewin-dashboard { padding: 8px 12px; overflow-y: auto; }
+
+.brewin-task-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 6px;
+}
+.brewin-task-row:hover { background: var(--background-modifier-hover); }
+.brewin-task-row > input[type="checkbox"] { margin: 3px 0 0; flex: 0 0 auto; }
+
+.brewin-task-main { flex: 1 1 auto; min-width: 0; }
+.brewin-task-title { display: flex; align-items: baseline; flex-wrap: wrap; gap: 3px; line-height: 1.35; }
+.brewin-task-link { cursor: pointer; }
+.brewin-task-link:hover { color: var(--text-accent); text-decoration: underline; }
+.brewin-recur, .brewin-next { color: var(--text-accent); }
+
+.brewin-task-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+.brewin-meta-due { color: var(--text-warning); }
+.brewin-meta-overdue { color: var(--text-error); font-weight: 600; }
+.brewin-meta-ctx { color: var(--text-accent); }
+
+.brewin-task-actions {
+  display: flex;
+  gap: 2px;
+  flex: 0 0 auto;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.brewin-task-row:hover .brewin-task-actions { opacity: 1; }
+@media (pointer: coarse) { .brewin-task-actions { opacity: 1; } }
+.brewin-icon-btn {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 5px;
+  color: var(--text-muted);
+}
+.brewin-icon-btn:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.brewin-project-row .brewin-task-title { color: var(--text-normal); }
+
+/* ── Task hierarchy (parent → subtasks) ─────────────────────────────────── */
+.brewin-expander {
+  cursor: pointer;
+  color: var(--text-muted);
+  width: 14px;
+  flex: 0 0 auto;
+  user-select: none;
+}
+.brewin-expander:hover { color: var(--text-normal); }
+
+.brewin-progress-chip {
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  padding: 0 7px;
+  border-radius: 9px;
+  margin-left: 6px;
+  white-space: nowrap;
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+}
+.brewin-progress-chip.ready {
+  background: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+  color: var(--text-accent);
+}
+.brewin-progress-chip.blocked { color: var(--text-warning); }
+
+/* A blocked parent's checkbox: visibly not-yet-tickable */
+.brewin-locked { opacity: 0.5; cursor: not-allowed; }
+
+.brewin-parent-crumb { color: var(--text-faint); cursor: pointer; }
+.brewin-parent-crumb:hover { color: var(--text-accent); text-decoration: underline; }
+
+.brewin-subtask-group {
+  margin-left: 14px;
+  padding-left: 10px;
+  border-left: 2px solid var(--background-modifier-border);
+}
+.brewin-subtask-row { font-size: 0.96em; }
+
+/* Subtask editor inside the capture modal */
+.brewin-subtasks-label {
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+  margin: 14px 0 4px;
+}
+.brewin-subtask-list { display: flex; flex-direction: column; gap: 2px; }
+.brewin-subtask-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 6px;
+  font-size: var(--font-ui-small);
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--background-secondary);
+}
+.brewin-subtask-item.done { opacity: 0.55; text-decoration: line-through; }
+.brewin-subtask-new { border-left: 2px solid var(--interactive-accent); }
+.brewin-subtask-input { width: 100%; margin-top: 6px; padding: 6px 8px; border-radius: 6px; }
+/* Clickable subtask rows (drill into a child, then return here) */
+.brewin-subtask-open { cursor: pointer; }
+.brewin-subtask-open:hover { background: var(--background-modifier-hover); }
+.brewin-subtask-chevron { color: var(--text-faint); flex: 0 0 auto; }
+
+/* Destructive action in a choice dialog */
+.brewin-scope-btn.brewin-danger { border-color: var(--text-error); color: var(--text-error); }
+.brewin-scope-btn.brewin-danger:hover { background: color-mix(in srgb, var(--text-error) 12%, transparent); }
+
+/* Group-by control + explainer */
+.brewin-groupby { margin-left: 6px; }
+.brewin-groupby-note {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  padding: 2px 2px 6px;
+}
+
+/* ── Capture / event modals ──────────────────────────────────────────────── */
+.brewin-capture-title {
+  width: 100%;
+  font-size: 1.15em;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  border-radius: 6px;
+}
+.brewin-capture-dates { display: flex; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.brewin-capture-quick { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.brewin-chip, .brewin-chip-mini {
+  cursor: pointer;
+  border-radius: 14px;
+  padding: 4px 12px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+}
+.brewin-chip:hover, .brewin-chip-mini:hover { background: var(--background-modifier-hover); }
+.brewin-chip-set { background: var(--interactive-accent); color: var(--text-on-accent); border-color: transparent; }
+.brewin-time-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.brewin-capture-notes { width: 100%; min-height: 64px; margin-top: 8px; border-radius: 6px; }
+.brewin-capture-buttons { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+/* Delete sits apart from the confirm/cancel pair so it can't be hit by accident */
+.brewin-delete-btn { margin-right: auto; color: var(--text-error); }
+.brewin-delete-btn:hover { background: color-mix(in srgb, var(--text-error) 14%, transparent); }
+.brewin-capture-hint { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 8px; text-align: right; }
+
+/* ── Date picker ─────────────────────────────────────────────────────────── */
+.brewin-dp-quick { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+.brewin-dp-quickbtn { cursor: pointer; border-radius: 12px; padding: 4px 12px; font-size: var(--font-ui-smaller); }
+.brewin-dp-nl { margin-bottom: 10px; }
+.brewin-dp-nl input { width: 100%; padding: 6px 8px; border-radius: 6px; }
+.brewin-dp-invalid { border-color: var(--text-error) !important; }
+.brewin-dp-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+.brewin-dp-title { font-weight: 600; }
+.brewin-dp-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; }
+.brewin-dp-dow { text-align: center; font-size: var(--font-ui-smaller); color: var(--text-muted); padding: 2px 0; }
+.brewin-dp-empty { aspect-ratio: 1; }
+.brewin-dp-day {
+  aspect-ratio: 1;
+  cursor: pointer;
+  border-radius: 6px;
+  border: none;
+  background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+}
+.brewin-dp-day:hover { background: var(--background-modifier-hover); }
+
+/* Three distinct marks: selected (filled) · paired date + span (tinted) · today (ring) */
+.brewin-dp-inspan { background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-secondary)); }
+.brewin-dp-related {
+  background: color-mix(in srgb, var(--interactive-accent) 28%, var(--background-secondary));
+  font-weight: 600;
+}
+.brewin-dp-selected {
+  background: var(--interactive-accent) !important;
+  color: var(--text-on-accent);
+  font-weight: 700;
+}
+.brewin-dp-today {
+  box-shadow: inset 0 0 0 2px var(--interactive-accent);
+  font-weight: 700;
+}
+/* When today IS the selection, ring it in the surface colour so both still read */
+.brewin-dp-selected.brewin-dp-today { box-shadow: inset 0 0 0 2px var(--background-primary); }
+
+.brewin-dp-key {
+  display: flex; flex-wrap: wrap; gap: 4px 12px;
+  margin-top: 10px; padding-top: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller); color: var(--text-muted);
+}
+.brewin-dp-key-item { display: inline-flex; align-items: center; gap: 5px; }
+.brewin-dp-key-swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.brewin-dp-key-swatch.is-selected { background: var(--interactive-accent); }
+.brewin-dp-key-swatch.is-related { background: color-mix(in srgb, var(--interactive-accent) 28%, var(--background-secondary)); }
+.brewin-dp-key-swatch.is-today { box-shadow: inset 0 0 0 2px var(--interactive-accent); }
+
+/* ── Calendar: shell ─────────────────────────────────────────────────────── */
+.brewin-calendar { display: flex; flex-direction: column; height: 100%; padding: 6px 10px; }
+.brewin-cal-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.brewin-cal-nav { display: flex; gap: 4px; }
+.brewin-cal-nav button { padding: 4px 9px; }
+.brewin-cal-title { font-weight: 600; font-size: 1.05em; }
+.brewin-cal-right { margin-left: auto; display: flex; gap: 8px; align-items: center; }
+.brewin-cal-seg { display: inline-flex; border: 1px solid var(--background-modifier-border); border-radius: 8px; overflow: hidden; }
+.brewin-cal-seg button { border: none; box-shadow: none; background: var(--background-secondary); padding: 4px 12px; cursor: pointer; border-radius: 0; }
+.brewin-cal-seg button:hover { background: var(--background-modifier-hover); }
+.brewin-cal-seg button.active { background: var(--interactive-accent); color: var(--text-on-accent); }
+
+.brewin-cal-legend {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px;
+  padding: 6px 2px 4px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+.brewin-legend-toggle {
+  display: inline-flex; align-items: center; gap: 5px;
+  cursor: pointer; user-select: none;
+  padding: 2px 8px; border-radius: 11px;
+  transition: opacity 0.1s ease;
+}
+.brewin-legend-toggle:hover { background: var(--background-modifier-hover); }
+.brewin-legend-toggle.off { opacity: 0.4; }
+.brewin-legend-glyph { font-size: 0.95em; }
+.brewin-legend-swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
+.brewin-legend-sep { width: 1px; align-self: stretch; min-height: 16px; background: var(--background-modifier-border); margin: 0 3px; }
+
+/* ── Time by category (calendar panel + Time view) ──────────────────────── */
+.brewin-time-panel { border-bottom: 1px solid var(--background-modifier-border); padding-bottom: 6px; }
+.brewin-time-panel-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 4px 2px;
+  cursor: pointer; user-select: none;
+  font-size: var(--font-ui-smaller); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+.brewin-time-panel-head:hover { color: var(--text-normal); }
+.brewin-time-panel-head .brewin-count { text-transform: none; margin-left: auto; }
+.brewin-time-panel-body { padding: 2px 2px 4px; }
+
+/* Bar rows — text stays in ink tokens; the swatch + label carry identity, never colour alone */
+.brewin-tb-row { margin: 6px 0; }
+.brewin-tb-head { display: flex; align-items: baseline; gap: 6px; font-size: var(--font-ui-smaller); }
+.brewin-tb-swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; align-self: center; }
+.brewin-tb-cat { color: var(--text-normal); }
+.brewin-tb-val { margin-left: auto; color: var(--text-normal); font-variant-numeric: tabular-nums; }
+.brewin-tb-pct { color: var(--text-muted); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+.brewin-tb-track {
+  margin-top: 3px; height: 8px; border-radius: 4px;
+  background: var(--background-modifier-border);
+  overflow: hidden;
+}
+.brewin-tb-fill { height: 100%; border-radius: 4px; }
+
+/* Unallocated is an absence, not an identity — recessive and hatched so it never
+   competes with the real categories for attention. */
+.brewin-tb-unalloc .brewin-tb-cat,
+.brewin-tb-unalloc .brewin-tb-val { color: var(--text-muted); font-style: italic; }
+.brewin-tb-swatch.is-unalloc {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--background-modifier-border) 0 3px,
+    transparent 3px 6px
+  );
+  box-shadow: inset 0 0 0 1px var(--background-modifier-border);
+}
+.brewin-tb-fill.is-unalloc {
+  background: repeating-linear-gradient(
+    45deg,
+    var(--background-modifier-border) 0 5px,
+    transparent 5px 10px
+  );
+}
+.brewin-tb-total {
+  margin-top: 10px; padding-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller); color: var(--text-muted);
+  text-align: right; font-variant-numeric: tabular-nums;
+}
+.brewin-tb-empty { color: var(--text-muted); font-size: var(--font-ui-smaller); padding: 8px 2px; }
+.brewin-tb-foot { color: var(--text-faint); font-size: var(--font-ui-smaller); margin-top: 14px; }
+.brewin-tb-subhead {
+  margin: 16px 0 6px; font-size: var(--font-ui-smaller); font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.02em; color: var(--text-muted);
+}
+
+/* Time view */
+.brewin-time { padding: 8px 12px; overflow-y: auto; }
+.brewin-time-range { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-bottom: 10px; }
+.brewin-time-hero { margin: 4px 0 14px; }
+.brewin-time-hero-num { font-size: 2em; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+.brewin-time-hero-cap { font-size: var(--font-ui-smaller); color: var(--text-muted); }
+
+/* Weekly trend strip */
+.brewin-trend { display: flex; align-items: flex-end; gap: 3px; height: 70px; }
+.brewin-trend-col { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; height: 100%; min-width: 0; }
+.brewin-trend-bar { width: 100%; background: var(--interactive-accent); border-radius: 3px 3px 0 0; }
+.brewin-trend-bar.empty { background: var(--background-modifier-border); }
+.brewin-trend-label { font-size: 0.62em; color: var(--text-faint); margin-top: 3px; white-space: nowrap; overflow: hidden; }
+
+/* ── Calendar: shared item chip (month cells + all-day columns) ─────────── */
+.brewin-chip-item {
+  display: block;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+  padding: 1px 6px;
+  margin: 2px 0;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: var(--background-modifier-hover);
+  border-left: 3px solid var(--text-accent);
+}
+.brewin-chip-item.kind-task { border-left-color: var(--interactive-accent); }
+.brewin-chip-item.done { opacity: 0.5; text-decoration: line-through; }
+.brewin-chip-item .g { opacity: 0.6; }
+.brewin-archived { opacity: 0.6; }
+
+/* Recurring-edit scope modal */
+.brewin-scope-btn {
+  display: block; width: 100%;
+  text-align: left;
+  margin: 6px 0; padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+  cursor: pointer;
+}
+.brewin-scope-btn:hover { background: var(--background-modifier-hover); border-color: var(--interactive-accent); }
+.brewin-scope-cancel { display: block; margin: 10px 0 0 auto; }
+
+/* ── Calendar: month grid ────────────────────────────────────────────────── */
+/* The month grid fills the window: week rows share whatever height is left, rather than
+   sitting at a fixed 98px and leaving dead space below in a tall window. `min-height: 0` is
+   the flexbox requirement for a child to shrink below its content size. The row floor means
+   a genuinely short window degrades to scrolling instead of unusable 20px rows. */
+/* The "this month" / "this week" task panel sits beside the grid, not above it — both share
+   this row so the grid keeps growing to fill whatever space the panel's fixed width leaves. */
+.brewin-month-row,
+.brewin-week-row { display: flex; flex-direction: row; flex: 1; min-height: 0; }
+.brewin-month-row > .brewin-month,
+.brewin-week-row > .brewin-timegrid { min-width: 0; }
+.brewin-month {
+  display: flex; flex-direction: column; flex: 1;
+  min-height: 0; overflow-y: auto;
+  margin-top: 6px; border-top: 1px solid var(--background-modifier-border);
+}
+.brewin-month-dowrow { display: grid; grid-template-columns: repeat(7, 1fr); }
+.brewin-month-dow { text-align: center; font-size: var(--font-ui-smaller); color: var(--text-muted); padding: 5px 0; font-weight: 600; }
+.brewin-month-week {
+  position: relative; display: grid; grid-template-columns: repeat(7, 1fr);
+  flex: 1 1 0; min-height: 56px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.brewin-month-cell {
+  position: relative;
+  display: flex; flex-direction: column; min-height: 0;
+  border-left: 1px solid var(--background-modifier-border);
+  padding: 0 3px 3px; overflow: hidden;
+}
+.brewin-month-cell:first-child { border-left: none; }
+.brewin-month-cell.othermonth { background: var(--background-secondary); }
+.brewin-month-cell.othermonth .brewin-month-daynum { color: var(--text-faint); }
+.brewin-month-daynum {
+  flex: 0 0 auto;
+  height: 20px; line-height: 20px;
+  font-size: var(--font-ui-smaller);
+  text-align: right;
+  padding: 0 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.brewin-month-cell.istoday { box-shadow: inset 0 0 0 2px var(--interactive-accent); }
+.brewin-month-cell.istoday .brewin-month-daynum { color: var(--text-accent); font-weight: 700; }
+.brewin-month-items { margin-top: var(--bars-h, 0px); flex: 1; min-height: 0; overflow: hidden; }
+.brewin-month-more { font-size: var(--font-ui-smaller); color: var(--text-muted); cursor: pointer; padding-left: 5px; }
+.brewin-month-bars { position: absolute; top: 20px; left: 0; right: 0; pointer-events: none; }
+/* ISO week number on each row's Monday cell — a visual anchor to the panel's "Week N" folds. */
+.brewin-month-weeknum {
+  position: absolute; top: 0; left: 3px; z-index: 1;
+  height: 20px; line-height: 20px;
+  font-size: var(--font-ui-smaller); color: var(--text-muted);
+  cursor: pointer; user-select: none;
+}
+.brewin-month-weeknum:hover { color: var(--text-accent); }
+.brewin-month-cell.othermonth .brewin-month-weeknum { color: var(--text-faint); }
+
+/* ── Calendar: "this month" / "this week" task side panel ─────────────────── */
+.brewin-caltasks-panel {
+  flex: 0 0 240px;
+  display: flex; flex-direction: column;
+  margin-top: 6px; padding: 8px 6px 8px 12px;
+  border-top: 1px solid var(--background-modifier-border);
+  border-left: 1px solid var(--background-modifier-border);
+  overflow-y: auto;
+}
+/* The week time grid has no top border of its own for the panel's to line up with. */
+.brewin-week-row > .brewin-caltasks-panel { border-top: none; }
+.brewin-caltasks-head {
+  display: flex; align-items: center; gap: 4px;
+  font-weight: 600; margin-bottom: 8px;
+  cursor: pointer; user-select: none;
+  min-height: 24px; /* comfortable tap target on a phone */
+}
+.brewin-caltasks-head:hover { color: var(--text-normal); }
+.brewin-caltasks-head:focus-visible {
+  outline: 2px solid var(--interactive-accent); outline-offset: -2px; border-radius: 3px;
+}
+.brewin-caltasks-head .brewin-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+
+/* Collapsed: a thin strip so the grid gets its width back (its columns are unusable on a
+   phone otherwise). The whole strip is the tap target back to expanded. */
+.brewin-caltasks-panel.is-collapsed {
+  flex: 0 0 auto;
+  padding: 8px 5px;
+  align-items: center;
+  cursor: pointer;
+}
+.brewin-caltasks-panel.is-collapsed:hover { background: var(--background-modifier-hover); }
+.brewin-caltasks-panel.is-collapsed .brewin-caltasks-head {
+  flex-direction: column; gap: 6px; margin-bottom: 0;
+}
+.brewin-caltasks-panel.is-collapsed .brewin-caltasks-head .brewin-count { margin-left: 0; }
+.brewin-caltasks-add input {
+  width: 100%; font-size: var(--font-ui-smaller);
+  padding: 4px 8px; border-radius: 5px; margin-bottom: 10px;
+}
+.brewin-caltasks-empty { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.brewin-caltasks-list { display: flex; flex-direction: column; gap: 2px; }
+
+/* Month panel: one fold per ISO week + an "Anytime this month" catch-all. */
+.brewin-caltasks-section { display: flex; flex-direction: column; }
+.brewin-caltasks-section + .brewin-caltasks-section {
+  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 8px; padding-top: 8px;
+}
+.brewin-caltasks-section-head {
+  display: flex; align-items: center; gap: 4px; min-height: 22px; margin-bottom: 6px;
+  font-size: var(--font-ui-smaller); font-weight: 600; letter-spacing: 0.02em;
+  text-transform: uppercase; color: var(--text-muted);
+  cursor: pointer; user-select: none;
+}
+.brewin-caltasks-section-head:hover { color: var(--text-normal); }
+.brewin-caltasks-section-head:focus-visible {
+  outline: 2px solid var(--interactive-accent); outline-offset: -2px; border-radius: 3px;
+}
+.brewin-caltasks-section-head .brewin-count { margin-left: auto; }
+.brewin-caltasks-section-sub {
+  font-weight: 400; text-transform: none; color: var(--text-faint);
+}
+.brewin-caltasks-section.is-current .brewin-caltasks-section-head { color: var(--text-accent); }
+.brewin-caltasks-section.brewin-drop-hover { border-radius: 4px; }
+.brewin-caltask-row {
+  display: flex; align-items: flex-start; gap: 6px;
+  font-size: var(--font-ui-smaller); padding: 3px 0;
+  border-radius: 4px;
+}
+.brewin-caltask-row input[type="checkbox"] { margin-top: 2px; flex: 0 0 auto; }
+.brewin-caltask-title { cursor: pointer; flex: 1; min-width: 0; word-break: break-word; }
+.brewin-caltask-title:hover { color: var(--text-accent); }
+.brewin-caltask-row.done .brewin-caltask-title { color: var(--text-muted); text-decoration: line-through; }
+/* A draggable Month/Week panel row: hint the press-and-hold affordance. */
+.brewin-caltask-row.brewin-draggable { padding-left: 4px; }
+.brewin-caltask-row.brewin-draggable:hover { background: var(--background-modifier-hover); }
+
+/* ── Calendar: spanning all-day bar (month + week all-day band) ─────────── */
+.brewin-bar {
+  position: absolute;
+  height: 17px; line-height: 16px;
+  box-sizing: border-box;
+  font-size: var(--font-ui-smaller);
+  padding: 0 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  pointer-events: auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-normal);
+  touch-action: manipulation;
+}
+.brewin-bar.cont-left { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-width: 0 !important; }
+.brewin-bar.cont-right { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.brewin-bar.done { opacity: 0.5; text-decoration: line-through; }
+
+/* ── Calendar: week / day time grid ─────────────────────────────────────── */
+.brewin-timegrid { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 6px; }
+.brewin-tg-header, .brewin-tg-allday { display: flex; }
+.brewin-tg-gutter, .brewin-tg-gutter-col { flex: 0 0 52px; width: 52px; font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.brewin-tg-header { border-bottom: 1px solid var(--background-modifier-border); }
+.brewin-tg-daycol { flex: 1; text-align: center; padding: 4px 0; cursor: pointer; border-left: 1px solid var(--background-modifier-border); }
+.brewin-tg-dow { font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.brewin-tg-date { font-weight: 600; }
+.brewin-tg-daycol.istoday .brewin-tg-date {
+  background: var(--interactive-accent); color: var(--text-on-accent);
+  border-radius: 50%; display: inline-block; width: 1.7em; height: 1.7em; line-height: 1.7em;
+}
+.brewin-tg-allday { border-bottom: 1px solid var(--background-modifier-border); min-height: 26px; max-height: 150px; overflow-y: auto; }
+.brewin-tg-allday .brewin-tg-gutter { display: flex; align-items: center; padding-left: 6px; }
+
+/* Foldable all-day row — expanded it can swallow a phone screen, so it collapses to a
+   thin strip that still shows how much is hidden up there. */
+.brewin-tg-allday-toggle {
+  gap: 3px; cursor: pointer; user-select: none;
+  /* A comfortable tap target on a phone without making the row taller when expanded. */
+  min-height: 26px;
+}
+.brewin-tg-allday-toggle:hover { color: var(--text-normal); }
+.brewin-tg-allday-toggle:focus-visible {
+  outline: 2px solid var(--interactive-accent); outline-offset: -2px; border-radius: 3px;
+}
+.brewin-tg-allday-toggle .brewin-count {
+  margin-left: auto; margin-right: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.brewin-tg-allday.is-collapsed { max-height: none; overflow: visible; }
+.brewin-tg-allday-stub { flex: 1; min-height: 22px; cursor: pointer; }
+.brewin-tg-allday-stub:hover { background: var(--background-modifier-hover); }
+.brewin-tg-allday-area { position: relative; flex: 1; }
+.brewin-tg-bars { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
+.brewin-tg-allday-cols { display: grid; margin-top: var(--bars-h, 0px); }
+.brewin-tg-allday-col { border-left: 1px solid var(--background-modifier-border); padding: 1px 2px; min-width: 0; min-height: 18px; }
+
+.brewin-tg-body { display: flex; flex: 1; overflow-y: auto; position: relative; }
+.brewin-tg-gutter-col { position: relative; }
+.brewin-tg-hour {
+  text-align: right; padding-right: 6px; box-sizing: border-box;
+  font-size: var(--font-ui-smaller);
+  border-top: 1px solid transparent;
+}
+/* Sub-hour rows (30/15-min zoom) read as secondary to the hour marks */
+.brewin-tg-hour.sub { color: var(--text-faint); font-size: 0.9em; }
+.brewin-tg-col { flex: 1; position: relative; border-left: 1px solid var(--background-modifier-border); }
+.brewin-tg-line { position: absolute; left: 0; right: 0; border-top: 1px solid var(--background-modifier-border); opacity: 0.45; pointer-events: none; }
+.brewin-tg-line.sub { opacity: 0.2; }
+
+/* Live "now" indicator — sits above the grid lines and any event blocks */
+.brewin-now-line {
+  position: absolute; left: 0; right: 0;
+  height: 0;
+  border-top: 2px solid var(--color-red, #e5484d);
+  z-index: 20;
+  pointer-events: none;
+}
+.brewin-now-dot {
+  position: absolute; left: -4px; top: -4px;
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--color-red, #e5484d);
+}
+.brewin-zoom { font-size: var(--font-ui-smaller); }
+.brewin-tg-event {
+  /* left/width are set inline by the overlap packer — simultaneous events share the
+     column side by side rather than covering one another. */
+  position: absolute;
+  border-radius: 5px;
+  padding: 2px 5px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--interactive-accent) 22%, var(--background-primary));
+  border-left: 3px solid var(--interactive-accent);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.brewin-tg-event.done { opacity: 0.5; text-decoration: line-through; }
+/* A block sharing its column gets a surface ring so the edges stay legible when packed tight. */
+.brewin-tg-event.shared { box-shadow: 0 0 0 1px var(--background-primary); }
+.brewin-tg-event.shared .time { display: none; }
+.brewin-tg-event.shared:hover { z-index: 5; }
+.brewin-tg-event .t { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.brewin-tg-event .time { font-size: 0.9em; opacity: 0.7; }
+.brewin-tg-event .loc { font-size: 0.9em; opacity: 0.7; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Packed side-by-side with a sibling, same as .time above — too narrow for a third line. */
+.brewin-tg-event.shared .loc { display: none; }
+
+/* ── Drag & drop ─────────────────────────────────────────────────────────── */
+/* Dragging is press-and-hold, so a plain tap and an ordinary scroll must both still work.
+   `manipulation` keeps panning available (the browser sends pointercancel if it takes the
+   gesture, which aborts the pending hold) while dropping the 300ms double-tap delay. */
+.brewin-draggable { cursor: grab; touch-action: manipulation; }
+.brewin-draggable:active { cursor: grabbing; }
+
+/* The hold has completed — say so, or press-and-hold is undiscoverable. */
+.brewin-drag-ready {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.28);
+  transform: scale(1.03);
+  transition: transform 90ms ease-out;
+}
+.brewin-drag-src { opacity: 0.35; }
+.brewin-is-dragging .brewin-bar,
+.brewin-is-dragging .brewin-chip-item,
+.brewin-is-dragging .brewin-tg-event { pointer-events: none; }
+/* While a drag is live the ALL DAY band must not be a scroll container — otherwise on touch
+   it competes with the drag for the vertical gesture and wins, which is what stopped events
+   being dragged out of it into the hour grid. */
+.brewin-is-dragging .brewin-tg-allday { overflow: hidden; }
+/* Same reason: the Month/Week task panels are vertical scrollers AND drop targets — they must
+   not eat the drag gesture while a task is being dragged onto them. */
+.brewin-is-dragging .brewin-caltasks-panel[data-drop] { overflow: hidden; }
+.brewin-drop-hover {
+  box-shadow: inset 0 0 0 2px var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 10%, transparent);
+}
+.brewin-caltasks-panel.brewin-drop-hover { border-radius: 4px; }
+.brewin-drag-ghost {
+  position: fixed; z-index: 9999; pointer-events: none;
+  background: var(--interactive-accent); color: var(--text-on-accent);
+  padding: 3px 9px; border-radius: 5px;
+  font-size: var(--font-ui-smaller); max-width: 220px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+.brewin-snap-preview {
+  position: absolute; left: 2px; right: 2px; z-index: 10; pointer-events: none;
+  border: 2px dashed var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+  border-radius: 5px;
+  font-size: var(--font-ui-smaller); font-weight: 600;
+  color: var(--text-normal);
+  padding: 1px 5px; box-sizing: border-box;
+}
+
+/* ── Multi-slot tasks (several fixed times in one day) ────────────────────────
+   The chip carries today's rhythm; clicking it reveals the individual times. */
+.brewin-slot-chip {
+  margin-left: 6px; padding: 0 6px;
+  border-radius: 9px;
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller); font-variant-numeric: tabular-nums;
+  cursor: pointer; white-space: nowrap;
+}
+.brewin-slot-chip:hover { color: var(--text-normal); }
+.brewin-slot-chip.ready {
+  background: color-mix(in srgb, var(--interactive-accent) 25%, var(--background-modifier-border));
+  color: var(--text-normal);
+}
+
+.brewin-slot-group {
+  margin: 2px 0 4px 26px;
+  border-left: 2px solid var(--background-modifier-border);
+  padding-left: 8px;
+}
+.brewin-slot-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 2px 0;
+  font-size: var(--font-ui-smaller);
+}
+.brewin-slot-row.done .brewin-slot-label {
+  opacity: 0.55; text-decoration: line-through;
+}
+.brewin-slot-label { color: var(--text-normal); }
+
+/* Editor in the task window */
+.brewin-slot-list { margin: 2px 0 6px; }
+.brewin-slot-empty { color: var(--text-faint); font-size: var(--font-ui-smaller); padding: 2px 0; }
+.brewin-slot-item {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 8px; padding: 3px 6px;
+  border-radius: 5px; background: var(--background-secondary);
+  font-size: var(--font-ui-smaller);
+}
+.brewin-slot-item + .brewin-slot-item { margin-top: 3px; }
+.brewin-slot-item button {
+  padding: 0 6px; background: transparent; color: var(--text-muted);
+  cursor: pointer; line-height: 1.4;
+}
+.brewin-slot-item button:hover { color: var(--text-error); }
+.brewin-slot-input { width: 100%; margin-bottom: 8px; }
+
+/* ── Dashboard view switcher ──────────────────────────────────────────────── */
+.brewin-view-seg {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin: 2px 0 8px;
+}
+.brewin-view-seg button {
+  padding: 2px 9px;
+  border-radius: 12px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer; white-space: nowrap;
+}
+.brewin-view-seg button:hover { color: var(--text-normal); }
+.brewin-view-seg button.active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+/* ── Today ────────────────────────────────────────────────────────────────── */
+.brewin-today-head {
+  display: flex; align-items: baseline; gap: 8px;
+  margin: 2px 0 8px;
+}
+.brewin-today-date { font-size: var(--font-ui-medium); font-weight: 600; }
+
+.brewin-allday-strip { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.brewin-allday-chip {
+  padding: 1px 8px; border-radius: 10px;
+  background: var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller); cursor: pointer;
+}
+.brewin-allday-chip:hover { color: var(--text-normal); }
+
+.brewin-agenda-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  font-size: var(--font-ui-smaller);
+}
+.brewin-agenda-row:hover { background: var(--background-modifier-hover); }
+.brewin-agenda-time {
+  flex: 0 0 44px;
+  color: var(--text-muted); font-variant-numeric: tabular-nums;
+}
+.brewin-agenda-title { flex: 1; min-width: 0; }
+.brewin-agenda-row.done .brewin-agenda-title { opacity: 0.55; text-decoration: line-through; }
+/* An event is context, not work — recessive, and it carries no checkbox. */
+.brewin-agenda-row.is-event { cursor: pointer; }
+.brewin-agenda-row.is-event .brewin-agenda-title {
+  color: var(--text-muted); font-style: italic;
+}
+.brewin-agenda-row.is-event::before {
+  content: "▮"; color: var(--text-faint); font-size: 0.85em;
+}
+.brewin-agenda-location {
+  flex: 0 1 auto; min-width: 0; max-width: 40%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--text-faint); font-size: 0.92em;
+}
+
+/* ── Week / Projects ──────────────────────────────────────────────────────── */
+.brewin-date-label { display: flex; align-items: baseline; gap: 8px; }
+.brewin-date-label.is-today { color: var(--text-accent); font-weight: 600; }
+.brewin-day-clear {
+  padding: 2px 0 6px 4px;
+  color: var(--text-faint); font-size: var(--font-ui-smaller); font-style: italic;
+}
+.brewin-project-label .brewin-task-link { cursor: pointer; }
+
+/* ── Multi-day tasks & repeat endings ─────────────────────────────────────── */
+.brewin-chip-disabled { opacity: 0.45; cursor: not-allowed; }
+.brewin-span-note:empty { display: none; }
+
+.brewin-repeat-end { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.brewin-repeat-count { width: 5em; }
+
+/* ── Custom recurrence builder (events) ───────────────────────────────────── */
+.brewin-recur-custom {
+  display: flex; flex-direction: column; gap: 8px;
+  margin: 2px 0 8px; padding: 8px 10px;
+  border-left: 2px solid var(--background-modifier-border);
+}
+.brewin-recur-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.brewin-recur-interval { width: 4.5em; }
+.brewin-recur-weekdays { display: flex; gap: 6px; flex-wrap: wrap; }
+/* Uniform pill width so a selected day's glow ring lines up cleanly across the row. */
+.brewin-recur-weekdays button {
+  min-width: 2.6em;
+  padding: 5px 0;
+  text-align: center;
+  border-radius: 999px;
+  font-weight: 600;
+  transition: box-shadow 0.1s ease;
+}
+/* A selected weekday needs to read at a glance across all seven, not just on hover — the
+   shared `.brewin-chip-set` fill alone reads too similar to a plain hover state at this size,
+   so a glow ring (derived from the same accent variable, so it re-themes for free) makes the
+   picked days pop without needing separate light/dark overrides. */
+.brewin-recur-weekdays button.brewin-chip-set {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--interactive-accent) 35%, transparent);
+}
+.brewin-recur-last { display: flex; align-items: center; gap: 4px; font-size: var(--font-ui-smaller); }
+
+/* ── Kanban board (Week / Projects) ───────────────────────────────────────────
+   Columns scroll horizontally rather than squeezing: seven readable columns beat
+   seven unreadable ones on a phone. Each column scrolls vertically on its own. */
+.brewin-layout-seg { display: inline-flex; gap: 4px; margin-left: 8px; }
+.brewin-layout-seg button {
+  padding: 2px 9px; border-radius: 12px;
+  background: var(--background-secondary); color: var(--text-muted);
+  font-size: var(--font-ui-smaller); cursor: pointer; white-space: nowrap;
+}
+.brewin-layout-seg button.active { background: var(--interactive-accent); color: var(--text-on-accent); }
+
+.brewin-board {
+  display: flex; gap: 8px;
+  overflow-x: auto; overflow-y: hidden;
+  padding-bottom: 6px;
+  /* Snap so a swipe lands on a column edge rather than halfway across one. */
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+.brewin-board-col {
+  flex: 0 0 210px;
+  scroll-snap-align: start;
+  display: flex; flex-direction: column;
+  max-height: 70vh;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+.brewin-board-col.is-today { border-color: var(--interactive-accent); }
+.brewin-board-head {
+  display: flex; align-items: baseline; gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: var(--font-ui-smaller); font-weight: 600;
+  position: sticky; top: 0;
+  background: var(--background-secondary);
+  border-radius: 8px 8px 0 0;
+}
+.brewin-board-col.is-today .brewin-board-head { color: var(--text-accent); }
+.brewin-board-body { flex: 1; overflow-y: auto; padding: 6px; min-height: 60px; }
+.brewin-board-empty {
+  color: var(--text-faint); font-size: var(--font-ui-smaller);
+  text-align: center; padding: 10px 0;
+}
+/* The drop target must be obvious mid-drag, when the ghost is under the finger. */
+.brewin-board-col.brewin-drop-active {
+  border-color: var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 12%, var(--background-secondary));
+}
+
+.brewin-card {
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--background-primary);
+  border-left: 3px solid var(--background-modifier-border);
+  cursor: pointer;
+}
+.brewin-card + .brewin-card { margin-top: 6px; }
+.brewin-card:hover { border-left-color: var(--interactive-accent); }
+.brewin-card.is-hold { opacity: 0.6; }
+.brewin-card-top { display: flex; align-items: flex-start; gap: 6px; }
+.brewin-card-top input { margin-top: 2px; flex: 0 0 auto; }
+.brewin-card-title {
+  font-size: var(--font-ui-smaller); line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.brewin-card-meta {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin-top: 4px; padding-left: 20px;
+  font-size: var(--font-ui-smaller); color: var(--text-muted);
+}
+.brewin-card-span {
+  padding: 0 5px; border-radius: 8px;
+  background: var(--background-modifier-border);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Context picker ───────────────────────────────────────────────────────── */
+.brewin-ctx-chips {
+  display: flex; flex-wrap: wrap; gap: 4px;
+  margin: -4px 0 10px;
+}
+.brewin-ctx-chips .brewin-chip-mini { cursor: pointer; }
+
+/* ── Search, bulk triage & estimates ──────────────────────────────────────── */
+.brewin-search { flex: 1 1 140px; min-width: 110px; max-width: 260px; }
+
+.brewin-select-box { margin-right: 2px; accent-color: var(--interactive-accent); }
+
+/* The bulk bar is an action surface, so it stays put while the list scrolls under it. */
+.brewin-bulk-host { position: sticky; top: 0; z-index: 6; }
+.brewin-bulk-bar {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin: 4px 0 8px; padding: 6px 8px;
+  border-radius: 8px;
+  background: var(--background-secondary);
+  border: 1px solid var(--interactive-accent);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+}
+.brewin-bulk-count { font-weight: 600; font-size: var(--font-ui-smaller); margin-right: 2px; }
+.brewin-bulk-bar button {
+  padding: 2px 9px; font-size: var(--font-ui-smaller);
+  border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.brewin-bulk-bar button.mod-warning { color: var(--text-error); }
+
+.brewin-meta-est { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* Capacity line on Today — informational until it isn't, then it says so plainly. */
+.brewin-workload {
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  margin: -4px 0 8px;
+  font-size: var(--font-ui-smaller); color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.brewin-workload.is-over { color: var(--text-normal); }
+.brewin-workload-over {
+  padding: 0 6px; border-radius: 8px;
+  background: color-mix(in srgb, var(--text-error) 18%, transparent);
+  color: var(--text-error); font-weight: 600;
+}
+
+.brewin-modal-btns { display: flex; justify-content: flex-end; gap: 6px; margin-top: 10px; }
+
+/* ── Natural-language capture preview ─────────────────────────────────────────
+   Nothing is applied silently: this states what was understood while you type. */
+.brewin-nl-hint {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+  min-height: 0; margin: 4px 0 8px;
+  font-size: var(--font-ui-smaller);
+}
+.brewin-nl-hint:empty { display: none; }
+.brewin-nl-arrow { color: var(--text-faint); }
+.brewin-nl-title { color: var(--text-normal); font-weight: 600; }
+.brewin-nl-tag {
+  padding: 0 7px; border-radius: 9px;
+  background: color-mix(in srgb, var(--interactive-accent) 18%, var(--background-secondary));
+  color: var(--text-normal);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Reminder popup ───────────────────────────────────────────────────────────
+   A sticky Notice (duration 0), so it waits for you rather than fading away. */
+.brewin-reminder { display: flex; flex-direction: column; gap: 2px; min-width: 200px; }
+.brewin-reminder-lead {
+  font-size: var(--font-ui-smaller); font-weight: 600;
+  color: var(--text-accent);
+}
+.brewin-reminder-title { font-size: var(--font-ui-medium); font-weight: 600; line-height: 1.3; }
+.brewin-reminder-sub {
+  font-size: var(--font-ui-smaller); color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.brewin-reminder-actions { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.brewin-reminder-actions button {
+  padding: 2px 10px; font-size: var(--font-ui-smaller);
+  border-radius: 6px; cursor: pointer;
+}
+
+/* ── Per-item reminder control ────────────────────────────────────────────── */
+.brewin-remind-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.brewin-remind-lead { width: 4.5em; }
+.brewin-remind-unit { font-size: var(--font-ui-smaller); color: var(--text-muted); }
+.brewin-remind-start {
+  display: flex; align-items: center; gap: 4px;
+  font-size: var(--font-ui-smaller); color: var(--text-muted); cursor: pointer;
+}
+.brewin-remind-preview:empty { display: none; }
+
+/* ── Weekly review ────────────────────────────────────────────────────────────
+   A transcription surface: dense, ordered, and easy to keep your place in. */
+.brewin-review-nav {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin: 2px 0 4px;
+}
+.brewin-review-nav button { padding: 2px 9px; font-size: var(--font-ui-smaller); cursor: pointer; }
+.brewin-review-range {
+  font-weight: 600; font-size: var(--font-ui-medium);
+  margin: 0 4px;
+}
+.brewin-review-count {
+  margin-bottom: 10px;
+  font-size: var(--font-ui-smaller); color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.brewin-review-count.is-done { color: var(--text-success, var(--text-accent)); font-weight: 600; }
+
+.brewin-review-day {
+  display: flex; align-items: baseline; gap: 8px;
+  margin: 14px 0 2px; padding-bottom: 2px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-weight: 600; font-size: var(--font-ui-small);
+  text-transform: uppercase; letter-spacing: 0.03em;
+}
+.brewin-review-day.is-today { color: var(--text-accent); border-bottom-color: var(--interactive-accent); }
+
+.brewin-review-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 3px 4px; border-radius: 4px;
+  font-size: var(--font-ui-smaller);
+}
+.brewin-review-row:hover { background: var(--background-modifier-hover); }
+.brewin-transfer-box { accent-color: var(--interactive-accent); flex: 0 0 auto; }
+.brewin-review-time {
+  flex: 0 0 88px;
+  color: var(--text-muted); font-variant-numeric: tabular-nums;
+}
+.brewin-review-title { flex: 1; min-width: 0; cursor: pointer; overflow-wrap: anywhere; }
+.brewin-review-meta { display: flex; gap: 4px; flex: 0 0 auto; }
+.brewin-review-kind {
+  padding: 0 6px; border-radius: 8px;
+  background: var(--background-modifier-border);
+  color: var(--text-muted); font-size: 0.9em;
+}
+.brewin-review-kind.kind-event { background: color-mix(in srgb, var(--interactive-accent) 20%, var(--background-modifier-border)); }
+
+/* Transferred is a place-keeper, NOT completion — dimmed, but visually distinct from a
+   done task, which is struck through in the task colour. */
+.brewin-review-row.is-transferred { opacity: 0.45; }
+.brewin-review-row.is-transferred .brewin-review-title { text-decoration: line-through; }
+.brewin-review-row.is-done .brewin-review-title { font-style: italic; color: var(--text-muted); }
+
+/* The Week/Day toggle sits inline in the nav row, not stacked as its own block. */
+.brewin-review-nav .brewin-view-seg { margin: 0; }
+
+/* ── Review Day view: priority breakdown + unscheduled triage ────────────────── */
+.brewin-review-priority, .brewin-review-unscheduled {
+  margin: 4px 0 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+.brewin-review-priority h4, .brewin-review-unscheduled h4 {
+  margin: 0 0 6px;
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase; letter-spacing: 0.03em;
+  color: var(--text-muted);
+}
+.brewin-review-unsch-head {
+  display: flex; align-items: center; gap: 4px;
+  cursor: pointer;
+  margin-bottom: 6px;
+}
+.brewin-review-unsch-head h4 { margin: 0; flex: 1; }
+.brewin-review-unsch-head .brewin-count { margin-left: auto; }
+.brewin-review-unscheduled.is-collapsed .brewin-review-unsch-head { margin-bottom: 0; }
+.brewin-review-pri-group { margin-bottom: 6px; }
+.brewin-review-pri-group:last-child { margin-bottom: 0; }
+.brewin-review-pri-label {
+  display: inline-block;
+  font-size: var(--font-ui-smaller); font-weight: 600;
+  margin-bottom: 2px;
+}
+.brewin-review-pri-group.high .brewin-review-pri-label { color: var(--text-error); }
+.brewin-review-pri-group.low .brewin-review-pri-label { color: var(--text-muted); }
+.brewin-review-pri-rows { display: flex; flex-direction: column; gap: 2px; }
+.brewin-review-pri-row {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: var(--font-ui-smaller);
+  padding: 2px 4px; border-radius: 4px;
+}
+.brewin-review-pri-row:hover { background: var(--background-modifier-hover); }
+.brewin-review-pri-time { flex: 0 0 auto; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+.brewin-review-unsch-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 3px 4px; border-radius: 4px;
+  font-size: var(--font-ui-smaller);
+}
+.brewin-review-unsch-row:hover { background: var(--background-modifier-hover); }
+
+/* ── Mobile: clear the fixed bottom toolbar ──────────────────────────────────
+   Obsidian's mobile app keeps a bottom menu bar on screen that overlays custom
+   views, hiding the last rows of content behind it. Reserve space at the foot of
+   each view so nothing sits under the bar.
+
+   - `.brewin-dashboard` / `.brewin-time` are themselves the scroll container, so
+     the padding lands at the end of their scroll range.
+   - `.brewin-calendar` is a flex column whose children scroll (month grid, time
+     grid, this-month panel); padding on the shell shrinks the space handed to
+     those children, so they end above the bar.
+
+   `.is-mobile` is set by Obsidian on the phone and tablet apps only — desktop
+   never matches, so this rule is inert there. Adjust the 48px if your device's
+   bar is a different height. */
+.is-mobile .brewin-calendar,
+.is-mobile .brewin-dashboard,
+.is-mobile .brewin-time {
+  padding-bottom: calc(var(--safe-area-inset-bottom, 0px) + 48px);
+}

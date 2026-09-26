@@ -1,0 +1,9 @@
+{
+  "id": "brewin-tasks",
+  "name": "Brewin Planner",
+  "version": "1.48.0",
+  "minAppVersion": "1.4.0",
+  "description": "First-party planner: tasks (capture, scheduling, recurrence), events, and a unified day/week/month calendar. The morning digest and Attention tab now also report backlog from the sibling Brewin Habits and Brewin Fitness plugins.",
+  "author": "lepusalbus",
+  "isDesktopOnly": false
+}
