@@ -16,6 +16,8 @@ export interface BrewinSettings {
   eventsArchiveFolder: string;
   /** Scanned by the event modal's "Link trip…" picker. */
   tripsFolder: string;
+  /** Where the task/event template library lives — one note per template. */
+  templatesFolder: string;
   /** Show the "this month" task panel to the right of the Month calendar view. */
   showMonthTasks: boolean;
   /** Whether that month-tasks panel is expanded (persisted, like the other panels).
@@ -101,6 +103,7 @@ export const DEFAULT_SETTINGS: BrewinSettings = {
   eventsFolder: "00_Systems/Calendar/Events",
   eventsArchiveFolder: "00_Systems/Calendar/Events/Archived",
   tripsFolder: "04_Areas/Leisure/Trips",
+  templatesFolder: "_Template/Planner",
   showMonthTasks: true,
   monthTasksOpen: true,
   showWeekTasks: true,
@@ -201,6 +204,11 @@ export class BrewinSettingTab extends PluginSettingTab {
     folder("Events folder", "Where calendar event notes live.", "eventsFolder");
     folder("Events archive folder", "Where 'Archive past events' moves past events. Keep it inside the Events folder to keep them visible on the calendar (greyed).", "eventsArchiveFolder");
     folder("Trips folder", "Scanned by the event modal's 'Link trip…' picker.", "tripsFolder");
+    folder(
+      "Templates folder",
+      "The library of task and event templates — one note each, carrying `planner_template: event` or `: task`. Adding a note adds a template; a per-template command appears after a reload.",
+      "templatesFolder"
+    );
 
     new Setting(containerEl)
       .setName("Contexts")

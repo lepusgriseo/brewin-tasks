@@ -10,6 +10,10 @@ import { parseCapture } from "./nlp";
 import { parseRemindField, parseRemindStart, previewTimes } from "./reminders";
 import { buildRRule, CustomFreq, CustomRecurrence, defaultCustomRecurrence, MonthlyMode, parseCustomRecurrence } from "./recurrenceBuilder";
 import { setCount, setUntil, stripEnd } from "./rrule";
+import { PlannerTemplate, resolveEvent } from "./plannerTemplate";
+import { TemplateStore } from "./templateStore";
+import { templateNoteFromEvent } from "./plannerTemplate";
+import { PromptModal } from "./promptModal";
 import { readRepeatEnd } from "./views";
 import { EventItem } from "./types";
 import { TripSuggestModal } from "./tripSuggestModal";
@@ -30,6 +34,10 @@ export class EventModal extends Modal {
   private title = "";
   /** True while redrawing, so blur handlers don't re-enter. */
   private rerendering = false;
+  /** The template library, when one was handed in — drives the picker at the top. */
+  private templateLib: TemplateStore | null = null;
+  /** The template this event is being created from, if any. Its body is fetched at save time. */
+  private template: PlannerTemplate | null = null;
   /** Reminder override for this event. */
   private remindMode: "default" | "custom" | "off" = "default";
   private remindLead = 10;
@@ -126,6 +134,77 @@ export class EventModal extends Modal {
     }
   }
 
+  /**
+   * Offer the template library in this modal. Chainable, so the ten existing call sites of the
+   * constructor stay exactly as they were.
+   */
+  withTemplateLibrary(store: TemplateStore): this {
+    this.templateLib = store;
+    return this;
+  }
+
+  /**
+   * Prefill from a library template. Ignored when editing an existing event — a template describes
+   * how to *start* something, and applying one to an event that already exists would quietly
+   * rewrite fields the user is in the middle of editing.
+   *
+   * Only keys the template actually sets are touched, so a template that says nothing about
+   * reminders leaves the reminder alone.
+   */
+  applyTemplate(t: PlannerTemplate | null, override?: { startTime?: string }): this {
+    if (this.existing || !t || t.kind !== "event") return this;
+    this.template = t;
+    const r = resolveEvent(t, { date: this.date, defaultMinutes: 60, startTime: override?.startTime });
+    if (r.title) this.title = r.title;
+    this.date = r.date;
+    if (r.allDay !== undefined) this.allDay = r.allDay;
+    if (r.startTime) {
+      this.allDay = false;
+      this.startTime = r.startTime;
+      this.endTime = r.endTime ?? addMinutesHM(r.startTime, 60);
+    }
+    if (r.category) this.category = r.category;
+    if (r.location) this.location = r.location;
+    if (r.endDate && r.endDate > r.date) {
+      if (r.allDay === true) this.endInclusive = r.endDate;
+      else this.timedEndDate = r.endDate;
+    }
+    if (r.recurrence) {
+      this.recurrence = stripEnd(r.recurrence);
+      if (!RECUR_PRESETS.some((p) => p.value === this.recurrence)) {
+        this.custom = parseCustomRecurrence(this.recurrence, this.date) ?? defaultCustomRecurrence(this.date, "WEEKLY");
+      }
+    }
+    if (r.remind) {
+      const pr = parseRemindField(r.remind);
+      this.remindMode = pr.off ? "off" : pr.minutes != null ? "custom" : "default";
+      if (pr.minutes != null) this.remindLead = pr.minutes;
+    }
+    if (r.remindStart !== undefined) this.remindStart = r.remindStart;
+    return this;
+  }
+
+  /** The picker, shown only for a new event and only when the library has something in it. */
+  private renderTemplatePicker(parent: HTMLElement): void {
+    const library = this.templateLib?.list("event") ?? [];
+    if (this.existing || library.length === 0) return;
+    new Setting(parent)
+      .setName("From template")
+      .setDesc("Prefills the fields below. Choosing one does not undo edits you have already made.")
+      .addDropdown((d) => {
+        d.addOption("", "— none —");
+        library.forEach((t) => d.addOption(t.name, t.name));
+        d.setValue(this.template?.name ?? "").onChange((name) => {
+          if (!name) {
+            this.template = null;
+            return;
+          }
+          this.applyTemplate(library.find((t) => t.name === name) ?? null);
+          this.rerender();
+        });
+      });
+  }
+
   private parseGap(a: string, b: string): number {
     // whole days b − a, using UTC to avoid DST drift
     return Math.round((Date.parse(b + "T00:00Z") - Date.parse(a + "T00:00Z")) / 86400000);
@@ -134,6 +213,7 @@ export class EventModal extends Modal {
   onOpen(): void {
     const { contentEl } = this;
     contentEl.createEl("h3", { text: this.existing ? "Edit event" : "New event" });
+    this.renderTemplatePicker(contentEl);
 
     const titleInput = contentEl.createEl("input", { type: "text", cls: "brewin-capture-title", placeholder: "Event title" });
     titleInput.value = this.title;
@@ -404,6 +484,11 @@ export class EventModal extends Modal {
     btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
     if (this.existing) {
       btns.createEl("button", { text: "Open note" }).addEventListener("click", () => this.openNote());
+    }
+    if (this.templateLib) {
+      const asTpl = btns.createEl("button", { text: "Save as template" });
+      asTpl.setAttr("aria-label", "Make a reusable template from these settings");
+      asTpl.addEventListener("click", () => this.saveAsTemplate());
     }
     btns.createEl("button", { text: this.existing ? "Save" : "Add event", cls: "mod-cta" }).addEventListener("click", () => this.save());
   }
@@ -695,7 +780,10 @@ export class EventModal extends Modal {
       await this.store.update(this.existing, fields);
       new Notice(`Event updated: ${title}`);
     } else {
-      await this.store.createEvent(fields);
+      // The body is read now rather than when the library was listed, so editing a template takes
+      // effect on the next event without a reload.
+      const body = this.template && this.templateLib ? await this.templateLib.bodyOf(this.template) : "";
+      await this.store.createEvent({ ...fields, body });
       new Notice(`Event added: ${title}`);
     }
     this.onCreated();
@@ -707,6 +795,42 @@ export class EventModal extends Modal {
     const f = this.app.vault.getAbstractFileByPath(this.existing.path);
     if (f instanceof TFile) this.app.workspace.getLeaf(false).openFile(f);
     this.close();
+  }
+
+  /**
+   * Turn what is on screen into a reusable template.
+   *
+   * This is how a template gets made in practice: set the time with the picker already in front of
+   * you — on a phone that is the OS time wheel — then name it. The date is deliberately not saved,
+   * and the end time becomes a duration, so the template still makes sense next month.
+   */
+  private saveAsTemplate(): void {
+    const lib = this.templateLib;
+    if (!lib) return;
+    new PromptModal(this.app, {
+      title: "Save as template",
+      body: "The times and settings above are kept. The date is not — an item made from this template lands on the day you create it.",
+      placeholder: "Meeting, Job, Deep work…",
+      initial: this.title.trim(),
+      cta: "Save template",
+      onSubmit: async (name) => {
+        const r = this.remindFields();
+        const text = templateNoteFromEvent(name, {
+          title: this.title.trim() || name,
+          category: this.category,
+          allDay: this.allDay,
+          startTime: this.allDay ? null : this.startTime,
+          endTime: this.allDay ? null : this.endTime,
+          recurrence: this.recurrence || null,
+          remind: r.remind,
+          remindStart: r.remindStart,
+          location: this.location,
+        });
+        await lib.save(name, text);
+        new Notice(`Template saved: ${name}. It needs a reload to get its own command.`);
+        this.rerender();
+      },
+    }).open();
   }
 
   /** Redraw the body after a parse changed several fields at once. */

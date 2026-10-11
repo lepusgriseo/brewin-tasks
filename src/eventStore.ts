@@ -28,6 +28,8 @@ export interface NewEventFields {
   trip?: string | null;
   /** Free-text "where" — an address, venue name, or room. Not a wikilink/note. */
   location?: string | null;
+  /** Body to write under the heading — what a template's agenda or checklist arrives as. */
+  body?: string;
 }
 
 export class EventStore {
@@ -99,6 +101,7 @@ export class EventStore {
     if (f.location) lines.push(`location: "${f.location.replace(/"/g, '\\"')}"`);
     // Left empty for the Properties panel: link the people who were there, e.g. [[Zoe Brewin]].
     lines.push("with: ", "completed: null", `modified: ${todayISO()}`, "---", "", `# ${f.title}`, "");
+    if (f.body?.trim()) lines.push(f.body.trim(), "");
     return this.app.vault.create(path, lines.join("\n"));
   }
 

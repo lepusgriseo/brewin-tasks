@@ -1225,7 +1225,9 @@ export class CalendarView extends ItemView {
   }
 
   private newEvent(dateISO: string): void {
-    new EventModal(this.app, this.plugin.events, this.plugin.settings, () => this.render(), dateISO).open();
+    new EventModal(this.app, this.plugin.events, this.plugin.settings, () => this.render(), dateISO)
+      .withTemplateLibrary(this.plugin.templates)
+      .open();
   }
 
   /**
@@ -1262,7 +1264,9 @@ export class CalendarView extends ItemView {
           new CaptureModal(this.app, this.plugin.store, this.plugin.settings, () => this.render(), undefined, undefined, {
             scheduled: dateISO,
             startTime: time ?? undefined,
-          }).open()
+          })
+            .withTemplateLibrary(this.plugin.templates)
+            .open()
         )
     );
     menu.addItem((i) =>
@@ -1270,9 +1274,21 @@ export class CalendarView extends ItemView {
         .setTitle(`New event · ${label}`)
         .setIcon("calendar")
         .onClick(() =>
-          new EventModal(this.app, this.plugin.events, this.plugin.settings, () => this.render(), dateISO, undefined, time ?? undefined).open()
+          new EventModal(this.app, this.plugin.events, this.plugin.settings, () => this.render(), dateISO, undefined, time ?? undefined)
+            .withTemplateLibrary(this.plugin.templates)
+            .open()
         )
     );
+    // The point of long-pressing a day is that you already know what you want to put there, so
+    // the library belongs in this menu rather than two modals away.
+    if (this.plugin.templates.list().length > 0) {
+      menu.addItem((i) =>
+        i
+          .setTitle(`From template… · ${label}`)
+          .setIcon("copy-plus")
+          .onClick(() => this.plugin.pickTemplate(dateISO, time ?? undefined))
+      );
+    }
     menu.showAtPosition({ x, y });
   }
 

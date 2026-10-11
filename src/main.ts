@@ -19,6 +19,9 @@ import { attentionTasks, expandRecurringTasks, formatWeekTaskBlock, unscheduledT
 import { fillSection } from "./section";
 import { autoScheduleDay, freeGapsToday } from "./autoSchedule";
 import { CalendarItem } from "./types";
+import { TemplateStore } from "./templateStore";
+import { TemplateSuggestModal } from "./templateSuggestModal";
+import { DEFAULT_TEMPLATE_ICON, PlannerTemplate, templateCommandId } from "./plannerTemplate";
 
 /** Heading the weekly-review command fills. Must match `_Template/Weekly Review.md`. */
 const TASK_SECTION_HEADING = "### Tasks this week";
@@ -29,6 +32,7 @@ export default class BrewinTasksPlugin extends Plugin {
   events!: EventStore;
   reminders!: ReminderService;
   backlog!: BacklogStore;
+  templates!: TemplateStore;
   private refreshQueued = false;
 
   async onload(): Promise<void> {
@@ -36,6 +40,7 @@ export default class BrewinTasksPlugin extends Plugin {
     this.store = new TaskStore(this.app, this.settings);
     this.events = new EventStore(this.app, this.settings);
     this.backlog = new BacklogStore(this.app, this.settings);
+    this.templates = new TemplateStore(this.app, this.settings);
     this.reminders = new ReminderService(this);
     this.reminders.start();
 
@@ -126,7 +131,15 @@ export default class BrewinTasksPlugin extends Plugin {
     this.addCommand({
       id: "brewin-new-event",
       name: "New event",
-      callback: () => new EventModal(this.app, this.events, this.settings, () => this.refreshViews()).open(),
+      callback: () =>
+        new EventModal(this.app, this.events, this.settings, () => this.refreshViews())
+          .withTemplateLibrary(this.templates)
+          .open(),
+    });
+    this.addCommand({
+      id: "brewin-new-from-template",
+      name: "New from template…",
+      callback: () => this.pickTemplate(),
     });
     this.addCommand({ id: "brewin-archive-past-events", name: "Archive past events", callback: () => this.archivePastEventsFlow() });
     this.addCommand({ id: "brewin-open-time", name: "Open time report", callback: () => this.activateTime() });
@@ -149,6 +162,8 @@ export default class BrewinTasksPlugin extends Plugin {
         return ok;
       },
     });
+
+    this.app.workspace.onLayoutReady(() => this.registerTemplateCommands());
 
     this.addSettingTab(new BrewinSettingTab(this.app, this));
 
@@ -337,6 +352,61 @@ export default class BrewinTasksPlugin extends Plugin {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
     else new Notice("Note not found: " + path);
+  }
+
+  /** Open the searchable library, then the right modal with that template applied. */
+  pickTemplate(dateISO?: string, time?: string): void {
+    const library = this.templates.list();
+    if (library.length === 0) {
+      new Notice(`No templates yet — add a note to ${this.settings.templatesFolder} with \`planner_template: event\` or \`: task\`.`);
+      return;
+    }
+    new TemplateSuggestModal(this.app, library, (t) => this.openFromTemplate(t, dateISO, time)).open();
+  }
+
+  /** Create from one template. `dateISO` is the day a calendar cell was clicked, when it was. */
+  openFromTemplate(t: PlannerTemplate, dateISO?: string, time?: string): void {
+    if (t.kind === "event") {
+      new EventModal(this.app, this.events, this.settings, () => this.refreshViews(), dateISO)
+        .withTemplateLibrary(this.templates)
+        .applyTemplate(t, { startTime: time })
+        .open();
+      return;
+    }
+    new CaptureModal(
+      this.app,
+      this.store,
+      this.settings,
+      () => this.refreshViews(),
+      undefined,
+      undefined,
+      dateISO ? { scheduled: dateISO, startTime: time } : undefined
+    )
+      .withTemplateLibrary(this.templates)
+      .applyTemplate(t, { startTime: time })
+      .open();
+  }
+
+  /**
+   * One command per template, so each can take a hotkey or a mobile toolbar slot.
+   *
+   * Obsidian has no public way to remove a command, so these are registered once per session:
+   * adding or renaming a template shows up after a reload. The searchable
+   * "New from template…" command always reflects the library as it is right now.
+   */
+  private registerTemplateCommands(): void {
+    for (const t of this.templates.list()) {
+      this.addCommand({
+        id: templateCommandId(t),
+        name: `New ${t.kind}: ${t.name}`,
+        icon: t.icon ?? DEFAULT_TEMPLATE_ICON[t.kind],
+        callback: () => {
+          // Re-read by name so an edited template is honoured without a reload.
+          const fresh = this.templates.byName(t.name, t.kind) ?? t;
+          this.openFromTemplate(fresh);
+        },
+      });
+    }
   }
 
   refreshViews(): void {

@@ -10,6 +10,10 @@ import { formatSlot, parseSlot, parseSlots, slotTitle } from "./slots";
 import { readRepeatEnd, spanOf } from "./views";
 import { buildContextIndex, parseContexts, toggleContext } from "./contexts";
 import { formatEstimate, parseEstimate } from "./estimate";
+import { PlannerTemplate, resolveTask } from "./plannerTemplate";
+import { TemplateStore } from "./templateStore";
+import { templateNoteFromTask } from "./plannerTemplate";
+import { PromptModal } from "./promptModal";
 import { parseCapture } from "./nlp";
 import { previewTimes, parseRemindField, parseRemindStart } from "./reminders";
 import { TaskSuggestModal } from "./taskSuggestModal";
@@ -28,6 +32,10 @@ export class CaptureModal extends Modal {
   private estimate: number | null = null;
   /** True while the modal is redrawing itself, to stop blur handlers re-entering. */
   private rerendering = false;
+  /** The template library, when one was handed in — drives the picker at the top. */
+  private templateLib: TemplateStore | null = null;
+  /** The template this task is being created from, if any. */
+  private template: PlannerTemplate | null = null;
   /** Reminder override mode for this item. */
   private remindMode: "default" | "custom" | "off" = "default";
   private remindLead = 10;
@@ -129,6 +137,7 @@ export class CaptureModal extends Modal {
     this.modalEl.addClass("brewin-capture-modal");
     const { contentEl } = this;
     contentEl.createEl("h3", { text: this.existing ? "Edit task" : "New task" });
+    this.renderTemplatePicker(contentEl);
 
     // Title
     const titleInput = contentEl.createEl("input", {
@@ -704,6 +713,11 @@ export class CaptureModal extends Modal {
     if (this.existing) {
       btns.createEl("button", { text: "Open note" }).addEventListener("click", () => this.openNote());
     }
+    if (this.templateLib) {
+      const asTpl = btns.createEl("button", { text: "Save as template" });
+      asTpl.setAttr("aria-label", "Make a reusable template from these settings");
+      asTpl.addEventListener("click", () => this.saveAsTemplate());
+    }
     const saveBtn = btns.createEl("button", { text: this.existing ? "Save" : "Add task", cls: "mod-cta" });
     saveBtn.addEventListener("click", () => this.save());
 
@@ -714,6 +728,117 @@ export class CaptureModal extends Modal {
   }
 
   /** The `remind:` / `remind_start:` pair this control represents. */
+  /** Offer the template library here. Chainable, so the constructor's call sites are untouched. */
+  withTemplateLibrary(store: TemplateStore): this {
+    this.templateLib = store;
+    return this;
+  }
+
+  /**
+   * Prefill from a library template. Ignored when editing an existing task.
+   *
+   * Only keys the template sets are touched. Note that a task template with no date leaves the
+   * task unscheduled on purpose — see `resolveTask` — because silently scheduling work for today
+   * puts things in front of you that you never asked for.
+   */
+  applyTemplate(t: PlannerTemplate | null, override?: { startTime?: string }): this {
+    if (this.existing || !t || t.kind !== "task") return this;
+    this.template = t;
+    const r = resolveTask(t, { date: this.scheduled ?? todayISO(), defaultMinutes: this.settings.defaultTaskMinutes, startTime: override?.startTime });
+    if (r.title) this.title = r.title;
+    if (r.scheduled) this.scheduled = r.scheduled;
+    if (r.due) this.due = r.due;
+    if (r.endDate) this.endDate = r.endDate;
+    if (r.startTime) {
+      this.timed = true;
+      this.startTime = r.startTime;
+      this.endTime = r.endTime ?? addMinutesHM(r.startTime, this.settings.defaultTaskMinutes);
+    }
+    if (r.priority) this.priority = r.priority;
+    if (r.contexts?.length) this.contexts = [...r.contexts];
+    if (r.estimate != null) this.estimate = r.estimate;
+    if (r.times?.length) this.times = [...r.times];
+    if (r.parent) this.parent = r.parent;
+    if (r.recurrence) {
+      this.recurrence = stripEnd(r.recurrence);
+    }
+    if (r.remind) {
+      const pr = parseRemindField(r.remind);
+      this.remindMode = pr.off ? "off" : pr.minutes != null ? "custom" : "default";
+      if (pr.minutes != null) this.remindLead = pr.minutes;
+    }
+    if (r.remindStart !== undefined) this.remindStart = r.remindStart;
+
+    // The body is not in the metadata cache, so it arrives a tick later — the same pattern the
+    // edit path already uses. Never overwrite something the user has typed.
+    if (this.templateLib) {
+      void this.templateLib.bodyOf(t).then((body) => {
+        if (body && !this.notesDirty && !this.notes.trim()) {
+          this.notes = body;
+          this.rerender();
+        }
+      });
+    }
+    return this;
+  }
+
+  /** The picker, shown only for a new task and only when the library has task templates. */
+  private renderTemplatePicker(parent: HTMLElement): void {
+    const library = this.templateLib?.list("task") ?? [];
+    if (this.existing || library.length === 0) return;
+    new Setting(parent)
+      .setName("From template")
+      .setDesc("Prefills the fields below. Choosing one does not undo edits you have already made.")
+      .addDropdown((d) => {
+        d.addOption("", "— none —");
+        library.forEach((tpl) => d.addOption(tpl.name, tpl.name));
+        d.setValue(this.template?.name ?? "").onChange((name) => {
+          if (!name) {
+            this.template = null;
+            return;
+          }
+          this.applyTemplate(library.find((tpl) => tpl.name === name) ?? null);
+          this.rerender();
+        });
+      });
+  }
+
+  /**
+   * Turn what is on screen into a reusable template — the times picked with the control already in
+   * front of you rather than typed as YAML. The notes box becomes the template's body, so a
+   * checklist carries over. No date is saved.
+   */
+  private saveAsTemplate(): void {
+    const lib = this.templateLib;
+    if (!lib) return;
+    new PromptModal(this.app, {
+      title: "Save as template",
+      body: "The times and settings above are kept, and the notes become the template's body. The date is not kept — a task made from this template starts unscheduled unless the template says otherwise.",
+      placeholder: "Prep work bag, Weekly review…",
+      initial: this.title.trim(),
+      cta: "Save template",
+      onSubmit: async (name) => {
+        const r = this.remindFields();
+        const text = templateNoteFromTask(name, {
+          title: this.title.trim() || name,
+          priority: this.priority,
+          contexts: this.contexts,
+          estimate: this.estimate,
+          startTime: this.timed ? this.startTime : null,
+          endTime: this.timed ? this.endTime : null,
+          recurrence: this.recurrence || null,
+          remind: r.remind,
+          remindStart: r.remindStart,
+          times: this.times,
+          body: this.notes,
+        });
+        await lib.save(name, text);
+        new Notice(`Template saved: ${name}. It needs a reload to get its own command.`);
+        this.rerender();
+      },
+    }).open();
+  }
+
   private remindFields(): { remind: string | null; remindStart: boolean | null } {
     if (this.remindMode === "off") return { remind: "none", remindStart: null };
     if (this.remindMode === "custom") {
