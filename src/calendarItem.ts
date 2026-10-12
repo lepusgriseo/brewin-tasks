@@ -2,7 +2,7 @@
 
 import { addDays, addMinutesHM, END_OF_DAY, formatISO, minutesOfDay, parseISO } from "./dates";
 import { doneTimesOn } from "./slots";
-import { taskCoversDay, taskDayIndex, taskLastDay, taskSpanDays } from "./task";
+import { taskDayIndex, taskLastDay, taskSpanDays } from "./task";
 import { effectiveStart, occurrencesInRange, parseRRule } from "./rrule";
 import { CalendarItem, CalendarKind, EventItem, Task } from "./types";
 
@@ -40,6 +40,8 @@ export function tasksToItems(
 ): CalendarItem[] {
   const out: CalendarItem[] = [];
   for (const t of tasks) {
+    // Someday means no date, by definition; a leftover date on one must not put it on a day.
+    if (t.status === "someday") continue;
     const day = t.scheduled ?? t.due;
     if (!day) continue;
     // Defensive: a recurring task's own anchor should never itself be exdated (detaching the
@@ -217,7 +219,7 @@ export function projectTasksToItems(tasks: ProjectTaskLike[], fromISO: string, t
  * people first, then your own work. Project tasks sit just after tasks, since that's what
  * they are — surfaced from a project note rather than standing on their own.
  */
-const KIND_RANK: Record<CalendarKind, number> = { event: 0, task: 1, project: 2 };
+const KIND_RANK: Record<CalendarKind, number> = { event: 0, training: 0, task: 1, project: 2 };
 
 /**
  * Sort items within a day: outstanding work first and anything already completed last

@@ -3,6 +3,7 @@
 // No Obsidian imports — fully unit-testable with a fixed "today".
 
 import { Buckets, Priority, Task } from "./types";
+import { isCarried } from "./status";
 
 const PRIORITY_RANK: Record<Priority, number> = { high: 0, normal: 1, low: 2 };
 
@@ -28,22 +29,30 @@ function byDueThenPriority(a: Task, b: Task): number {
  *  - On hold: status === "hold"
  *  - Done:    status === "done" → excluded
  *  - Overdue: todo AND due < today (hard-deadline breach takes precedence)
- *  - Today:   todo AND scheduled <= today
+ *  - Carried: todo AND planned for a day that has passed (see status.isCarried)
+ *  - Today:   todo AND scheduled today, or a multi-day span still running
  *  - Upcoming: todo AND scheduled > today
- *  - Unplanned: todo AND no scheduled date
+ *  - Unplanned: todo AND no scheduled date — "needs scheduling"
+ *  - Someday: status === "someday" → its own list, never nagged about
  */
 export function classify(tasks: Task[], todayISO: string): Buckets {
-  const b: Buckets = { overdue: [], today: [], upcoming: [], unplanned: [], onhold: [] };
+  const b: Buckets = { overdue: [], carried: [], today: [], upcoming: [], unplanned: [], onhold: [], someday: [] };
 
   for (const t of tasks) {
     if (t.status === "hold") {
       b.onhold.push(t);
       continue;
     }
+    if (t.status === "someday") {
+      b.someday.push(t);
+      continue;
+    }
     if (t.status === "done") continue;
 
     if (t.due && t.due < todayISO) {
       b.overdue.push(t);
+    } else if (isCarried(t, todayISO)) {
+      b.carried.push(t);
     } else if (t.scheduled && t.scheduled <= todayISO) {
       // (a span that started earlier still counts as today's work — same branch)
       b.today.push(t);
@@ -55,10 +64,12 @@ export function classify(tasks: Task[], todayISO: string): Buckets {
   }
 
   b.overdue.sort(byDueThenPriority);
+  b.carried.sort(byScheduledThenPriority);
   b.today.sort(byScheduledThenPriority);
   b.upcoming.sort(byScheduledThenPriority);
   b.unplanned.sort((a, z) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[z.priority] || a.title.localeCompare(z.title));
   b.onhold.sort((a, z) => a.title.localeCompare(z.title));
+  b.someday.sort((a, z) => a.title.localeCompare(z.title));
 
   return b;
 }

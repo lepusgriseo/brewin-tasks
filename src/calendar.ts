@@ -2,12 +2,17 @@
 
 import { addDays, formatISO, minutesOfDay, monthMatrix, parseISO, weekDates } from "./dates";
 
-export type CalView = "month" | "week" | "day";
+/**
+ * `3day` is the phone's week: three columns a phone can actually read, where seven left each event
+ * a 40px sliver reading "🔁…". It starts on the anchor day rather than a week boundary.
+ */
+export type CalView = "month" | "week" | "3day" | "day";
 
 /** Inclusive [from,to] ISO range a view covers, anchored on `anchorISO`. */
 export function visibleRange(view: CalView, anchorISO: string, weekStart: number): { from: string; to: string } {
   const anchor = parseISO(anchorISO)!;
   if (view === "day") return { from: anchorISO, to: anchorISO };
+  if (view === "3day") return { from: anchorISO, to: formatISO(addDays(anchor, 2)) };
   if (view === "week") {
     const days = weekDates(anchor, weekStart);
     return { from: formatISO(days[0]), to: formatISO(days[6]) };
@@ -20,6 +25,7 @@ export function visibleRange(view: CalView, anchorISO: string, weekStart: number
 export function stepAnchor(view: CalView, anchorISO: string, dir: number): string {
   const anchor = parseISO(anchorISO)!;
   if (view === "day") return formatISO(addDays(anchor, dir));
+  if (view === "3day") return formatISO(addDays(anchor, dir * 3));
   if (view === "week") return formatISO(addDays(anchor, dir * 7));
   // month
   const m = anchor.getUTCMonth() + dir;
@@ -91,9 +97,9 @@ export function viewTitle(view: CalView, anchorISO: string, weekStart: number): 
   if (view === "day") {
     return d.toLocaleString("default", { weekday: "short", day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
   }
-  const days = weekDates(d, weekStart);
+  const days = view === "3day" ? [d, addDays(d, 2)] : weekDates(d, weekStart);
   const a = days[0];
-  const b = days[6];
+  const b = days[days.length - 1];
   const aM = a.toLocaleString("default", { month: "short", timeZone: "UTC" });
   const bM = b.toLocaleString("default", { month: "short", timeZone: "UTC" });
   return `${aM} ${a.getUTCDate()} – ${bM} ${b.getUTCDate()}, ${b.getUTCFullYear()}`;

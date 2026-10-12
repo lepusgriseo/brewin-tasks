@@ -25,6 +25,8 @@ import { toWikilink } from "./task";
 
 /** Create-or-edit a task: title + scheduled/due via date-picker + priority + context + repeat. */
 export class CaptureModal extends Modal {
+  /** Whether "More options" was last left open — remembered for the session. */
+  private static moreOpen = false;
   private title = "";
   private scheduled: string | null = null;
   private due: string | null = null;
@@ -143,7 +145,8 @@ export class CaptureModal extends Modal {
     const titleInput = contentEl.createEl("input", {
       type: "text",
       cls: "brewin-capture-title",
-      placeholder: "What needs doing?",
+      // The title understands dates, times, repeats and sigils — the placeholder says so.
+      placeholder: this.existing ? "What needs doing?" : "e.g. Call bank tomorrow 2pm @home !high",
     });
     titleInput.value = this.title;
     titleInput.addEventListener("keydown", (e) => {
@@ -318,6 +321,7 @@ export class CaptureModal extends Modal {
         d
           .addOption("todo", "To do")
           .addOption("hold", "On hold")
+          .addOption("someday", "Someday — no date, no nagging")
           .addOption("done", "Done")
           .setValue(this.status)
           .onChange((v) => (this.status = v as Status))
@@ -325,6 +329,7 @@ export class CaptureModal extends Modal {
     }
 
 
+    const advA = contentEl.childElementCount;
     // ── Reminder ──
     // `remind:` and `remind_start:` were readable only by hand-editing frontmatter until now.
     // The preview line states the actual clock times, so the setting isn't abstract.
@@ -422,6 +427,7 @@ export class CaptureModal extends Modal {
     let ctxInput: HTMLInputElement | null = null;
     let renderChips = () => {};
 
+    const advAEnd = contentEl.childElementCount;
     new Setting(contentEl).setName("Context").addText((t) => {
       ctxInput = t.inputEl;
       t.setPlaceholder(ctxIndex.suggestions.slice(0, 3).join(", ") || "home, work");
@@ -451,10 +457,15 @@ export class CaptureModal extends Modal {
     });
 
     const chips = contentEl.createDiv({ cls: "brewin-ctx-chips" });
+    // Your most-used contexts first, ten of them; the rest a tap away. Nineteen chips took about a
+    // third of a phone screen before Notes. Any context already on the task always shows.
+    let showAllContexts = false;
     renderChips = () => {
       chips.empty();
       const active = new Set(this.contexts.map((c) => c.toLowerCase()));
-      for (const c of ctxIndex.suggestions) {
+      const all = ctxIndex.suggestions;
+      const shown = showAllContexts ? all : all.filter((c, i) => i < 10 || active.has(c.toLowerCase()));
+      for (const c of shown) {
         const on = active.has(c.toLowerCase());
         const chip = chips.createEl("button", {
           cls: "brewin-chip-mini" + (on ? " brewin-chip-set" : ""),
@@ -469,10 +480,21 @@ export class CaptureModal extends Modal {
           renderChips();
         });
       }
+      const hidden = all.length - shown.length;
+      if (hidden > 0) {
+        const more = chips.createEl("button", { cls: "brewin-chip-mini brewin-chip-more", text: `+${hidden}` });
+        more.setAttr("aria-label", `Show ${hidden} more context${hidden === 1 ? "" : "s"}`);
+        more.addEventListener("click", (e) => {
+          e.preventDefault();
+          showAllContexts = true;
+          renderChips();
+        });
+      }
     };
     renderChips();
 
     // Repeat
+    const advB = contentEl.childElementCount;
     new Setting(contentEl)
       .setName("Repeat")
       .setDesc("Recurring tasks re-arm on completion.")
@@ -683,6 +705,8 @@ export class CaptureModal extends Modal {
     });
     renderPending();
 
+    const advBEnd = contentEl.childElementCount;
+
     // Notes — the note body (loaded asynchronously when editing)
     const notes = contentEl.createEl("textarea", {
       cls: "brewin-capture-notes",
@@ -701,6 +725,38 @@ export class CaptureModal extends Modal {
         notes.value = body;
       });
     }
+
+    // ── More options ──
+    // The form ran to ~2,000px on a phone with Save at the very bottom, while estimate, reminder,
+    // parent and dependencies were each used on a handful of tasks. They fold away here, and open
+    // by themselves whenever the task actually uses one.
+    const advanced = [
+      ...Array.from(contentEl.children).slice(advA, advAEnd),
+      ...Array.from(contentEl.children).slice(advB, advBEnd),
+    ];
+    const uses =
+      this.remindMode !== "default" ||
+      this.estimate != null ||
+      !!this.recurrence ||
+      this.times.length > 0 ||
+      !!this.parent ||
+      this.dependsOn.length > 0 ||
+      this.newSubtasks.length > 0 ||
+      existingKids.length > 0;
+    const moreToggle = contentEl.createEl("button", { cls: "brewin-more-toggle" });
+    const more = contentEl.createDiv({ cls: "brewin-more" });
+    advanced.forEach((el) => more.appendChild(el));
+    const open = uses || CaptureModal.moreOpen;
+    const paint = (on: boolean) => {
+      more.toggleClass("brewin-collapsed", !on);
+      moreToggle.setText(on ? "Fewer options ▴" : "More options ▾ — repeat, reminder, estimate, parent, subtasks");
+    };
+    paint(open);
+    moreToggle.addEventListener("click", () => {
+      const on = more.hasClass("brewin-collapsed");
+      CaptureModal.moreOpen = on;
+      paint(on);
+    });
 
     // Buttons
     const btns = contentEl.createDiv({ cls: "brewin-capture-buttons" });

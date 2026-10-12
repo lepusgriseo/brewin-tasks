@@ -1143,3 +1143,154 @@
 .is-mobile .brewin-time {
   padding-bottom: calc(var(--safe-area-inset-bottom, 0px) + 48px);
 }
+
+/* ── 1.51 — the phone-first review ─────────────────────────────────────────────
+   Built against the views rendered at 390px with Obsidian's own app.css. */
+
+/* Task rows: a long title wraps inside its own line instead of dropping below the expander and
+   the priority dot, which left those stranded on a line of their own. */
+.brewin-task-title { flex-wrap: nowrap; align-items: flex-start; }
+.brewin-task-title .brewin-task-link { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.brewin-task-title .brewin-progress-chip,
+.brewin-task-title .brewin-slot-chip { flex: 0 0 auto; align-self: center; }
+.brewin-expander { flex: 0 0 auto; padding: 0 4px 0 0; }
+
+/* Foldable section headers. */
+.brewin-section-header.is-foldable { cursor: pointer; user-select: none; }
+.brewin-collapsed { display: none; }
+
+/* Carried over: one-tap answers under each task. */
+.brewin-task-row { flex-wrap: wrap; }
+/* Sized from zero, not from its content: with wrapping on (for the triage strip), a content-sized
+   title column took the whole first line and pushed the action icons onto an empty line of their own. */
+.brewin-task-row > .brewin-task-main { flex: 1 1 0; }
+/* Full row width under the title, lined up with it: four chips fit on one line on a phone. */
+.brewin-task-row > .brewin-triage { flex: 0 0 100%; padding-left: 28px; display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0; }
+.brewin-dashboard .brewin-triage .brewin-triage-btn {
+  font-size: var(--font-ui-smaller);
+  padding: 0 10px;
+  /* An explicit height: Obsidian's phone buttons are input-height tall, which put four chips on
+     two rows under every carried task. */
+  height: 28px;
+  min-height: 0;
+  line-height: 1;
+  border-radius: 999px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  box-shadow: none;
+  border: 1px solid var(--background-modifier-border);
+}
+.brewin-dashboard .brewin-triage .brewin-triage-btn:hover { color: var(--text-normal); }
+
+/* Training from the Fitness plan, in Today's timeline and on the calendar. */
+.brewin-agenda-row.is-training { cursor: pointer; }
+.brewin-agenda-row.is-training .brewin-agenda-title { color: var(--text-normal); }
+.brewin-agenda-row.is-training.done .brewin-agenda-title { color: var(--text-muted); }
+.brewin-allday-chip.is-training { cursor: default; }
+.brewin-tg-event.kind-training { cursor: pointer; }
+.brewin-tg-event.kind-training.done,
+.brewin-chip-item.kind-training.done { opacity: 0.6; }
+
+/* "More options" in the task and event forms. */
+.brewin-capture-modal .brewin-more-toggle,
+.modal .brewin-more-toggle {
+  width: 100%;
+  margin: 10px 0 4px;
+  justify-content: flex-start;
+  background: transparent;
+  box-shadow: none;
+  border: 1px dashed var(--background-modifier-border);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  white-space: normal;
+  height: auto;
+  min-height: 36px;
+  text-align: left;
+}
+
+/* Calendar toolbar controls. */
+.brewin-cal-filter.is-active { color: var(--text-accent); }
+
+/* ── Phones ─────────────────────────────────────────────────────────────────── */
+
+/* The view tabs sit in one row you swipe, instead of wrapping onto two. */
+body.is-phone .brewin-view-seg {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+  margin-bottom: 6px;
+}
+body.is-phone .brewin-view-seg::-webkit-scrollbar { display: none; }
+body.is-phone .brewin-view-seg button { flex: 0 0 auto; min-height: 32px; padding: 2px 12px; }
+
+/* One toolbar row: search takes the room, the filter and select toggle sit beside it. */
+body.is-phone .brewin-dashboard .brewin-toolbar { flex-wrap: nowrap; }
+body.is-phone .brewin-dashboard .brewin-search { flex: 1 1 auto; min-width: 0; font-size: 16px; }
+body.is-phone .brewin-context-filter { margin-left: 0; max-width: 36%; }
+body.is-phone .brewin-groupby { max-width: 30%; }
+body.is-phone .brewin-select-toggle { flex: 0 0 auto; min-width: 40px; }
+
+/* The new-task button, where a thumb already is, above Obsidian's bottom bar. */
+.brewin-dashboard .brewin-fab {
+  position: sticky;
+  bottom: calc(var(--safe-area-inset-bottom, 0px) + 64px);
+  margin: 8px 4px 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  padding: 0;
+  border-radius: 50%;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  z-index: 6;
+}
+.brewin-dashboard .brewin-fab svg { width: 24px; height: 24px; }
+
+/* Bigger tap targets on rows. */
+body.is-phone .brewin-task-row { padding-top: 6px; padding-bottom: 6px; }
+body.is-phone .brewin-task-row input[type="checkbox"] { width: 20px; height: 20px; }
+
+/* Forms: Save stays on screen instead of sitting under 2,000px of fields. */
+body.is-phone .modal .brewin-capture-buttons {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  margin: 12px calc(-1 * var(--size-4-4, 16px)) 0;
+  padding: 10px var(--size-4-4, 16px) calc(10px + var(--safe-area-inset-bottom, 0px));
+  background: var(--modal-background, var(--background-primary));
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Calendar: one compact toolbar row of controls, and Month's side panel below the grid rather
+   than squeezing it to a third of the screen. */
+body.is-phone .brewin-cal-toolbar { gap: 6px; }
+body.is-phone .brewin-cal-title { font-size: var(--font-ui-medium); }
+body.is-phone .brewin-cal-right { margin-left: 0; width: 100%; gap: 6px; }
+body.is-phone .brewin-cal-seg { flex: 1 1 auto; }
+body.is-phone .brewin-cal-seg button { flex: 1 1 0; padding-left: 4px; padding-right: 4px; }
+body.is-phone .brewin-cal-add { min-width: 40px; padding: 0 12px; }
+body.is-phone .brewin-month-row,
+body.is-phone .brewin-week-row { flex-direction: column; }
+body.is-phone .brewin-month-row > .brewin-caltasks-panel,
+body.is-phone .brewin-week-row > .brewin-caltasks-panel { width: auto; max-width: none; border-left: none; }
+
+/* Today's header on a phone: the date on one line, the counts beside it, the action below. */
+body.is-phone .brewin-today-head { flex-wrap: wrap; row-gap: 6px; }
+body.is-phone .brewin-today-date { white-space: nowrap; }
+body.is-phone .brewin-today-head .brewin-count { white-space: nowrap; }
+body.is-phone .brewin-today-head .brewin-chip-mini { margin-left: auto; height: 30px; }
+
+/* Calendar toolbar on a phone: archiving past events lives in the command palette; the zoom
+   picker is compact. Otherwise the view switcher was cut off at the right edge. */
+body.is-phone .brewin-cal-toolbar .brewin-cal-archive { display: none; }
+body.is-phone .brewin-cal-toolbar .brewin-zoom { width: auto; max-width: 84px; padding-left: 6px; padding-right: 18px; }
+
+/* All view on a phone: search gets its own line so the two pickers do not squeeze it to "Sea…". */
+body.is-phone .brewin-dashboard .brewin-toolbar.has-groupby { flex-wrap: wrap; }
+body.is-phone .brewin-dashboard .brewin-toolbar.has-groupby .brewin-search { flex: 1 1 100%; width: 100%; max-width: none; }
+body.is-phone .brewin-dashboard .brewin-toolbar.has-groupby .brewin-context-filter,
+body.is-phone .brewin-dashboard .brewin-toolbar.has-groupby .brewin-groupby { flex: 1 1 0; max-width: none; }
+.brewin-chip-more { opacity: 0.75; }
+body.is-phone .brewin-dashboard .brewin-toolbar .brewin-search { max-width: none; }

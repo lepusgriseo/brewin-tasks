@@ -119,7 +119,8 @@ export class ReminderService {
   private buildSources(today: string): ReminderSource[] {
     const tasks = this.plugin.store.getTasks();
     const events = this.plugin.events.getEvents();
-    const agenda = todayAgenda(tasks, eventsToItems(events, today, today), today);
+    // Training from the Fitness plan reminds just as the workout events it replaced used to.
+    const agenda = todayAgenda(tasks, [...eventsToItems(events, today, today), ...this.plugin.trainingItems(today, today)], today);
 
     const byPath = new Map(tasks.map((t) => [t.path, t]));
     const eventByPath = new Map(events.map((e) => [e.path, e]));
@@ -136,7 +137,7 @@ export class ReminderService {
       out.push({
         key: `${row.path}|${today}|${row.slotTime ?? row.time}`,
         title: row.title,
-        subtitle: [row.endTime ? `${row.time}–${row.endTime}` : row.time, row.kind === "event" ? "event" : "task"]
+        subtitle: [row.endTime ? `${row.time}–${row.endTime}` : row.time, row.kind === "event" ? "event" : row.kind === "training" ? "training" : "task"]
           .filter(Boolean)
           .join(" · "),
         path: row.path,

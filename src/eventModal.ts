@@ -5,7 +5,7 @@ import { BrewinSettings } from "./settings";
 import { RECUR_PRESETS } from "./recurrencePresets";
 import { RecurrenceScopeModal } from "./recurrenceScopeModal";
 import { ConfirmModal } from "./confirmModal";
-import { addMinutesHM, formatHM, minutesOfDay, shiftISO } from "./dates";
+import { addMinutesHM, formatHM, minutesOfDay, nowMinutes, shiftISO, todayISO } from "./dates";
 import { parseCapture } from "./nlp";
 import { parseRemindField, parseRemindStart, previewTimes } from "./reminders";
 import { buildRRule, CustomFreq, CustomRecurrence, defaultCustomRecurrence, MonthlyMode, parseCustomRecurrence } from "./recurrenceBuilder";
@@ -31,6 +31,8 @@ const FREQ_UNIT: Record<CustomFreq, [string, string]> = {
 
 /** Create-or-edit an event. Uses native <input type="time"> for mobile-friendly time entry. */
 export class EventModal extends Modal {
+  /** Whether "More options" was last left open — remembered for the session. */
+  private static moreOpen = false;
   private title = "";
   /** True while redrawing, so blur handlers don't re-enter. */
   private rerendering = false;
@@ -125,11 +127,20 @@ export class EventModal extends Modal {
         this.endInclusive = inc && inc > this.date ? inc : null;
       }
     } else {
-      this.date = presetDateOrExisting ?? new Date().toISOString().slice(0, 10);
+      // The local date: the UTC one was yesterday's between midnight and 1am in summer.
+      this.date = presetDateOrExisting ?? todayISO();
       if (presetStartTime) {
         this.allDay = false;
         this.startTime = presetStartTime;
         this.endTime = addMinutesHM(presetStartTime, 60);
+      } else {
+        // Most events are timed — 176 of 241 in this vault — so a new one starts timed: at the
+        // next round hour today, or 09:00 on another day. All-day is one toggle away.
+        const nextHour = Math.floor(nowMinutes() / 60) + 1;
+        const start = this.date === todayISO() && nextHour <= 22 ? `${String(nextHour).padStart(2, "0")}:00` : "09:00";
+        this.allDay = false;
+        this.startTime = start;
+        this.endTime = addMinutesHM(start, 60);
       }
     }
   }
@@ -346,6 +357,7 @@ export class EventModal extends Modal {
       d.setValue(this.category || names[0] || "General").onChange((v) => (this.category = v));
     });
 
+    const advA = contentEl.childElementCount;
     // ── Trip ──
     const tripSetting = new Setting(contentEl).setName("Trip").setDesc("Link this event to a trip note.");
     const tripWrap = tripSetting.controlEl.createDiv({ cls: "brewin-remind-row" });
@@ -403,9 +415,11 @@ export class EventModal extends Modal {
           .onChange((v) => (this.location = v.trim() || null))
       );
 
+    const advAEnd = contentEl.childElementCount;
     this.repeatWrapEl = contentEl.createDiv();
     this.renderRepeat();
 
+    const advB = contentEl.childElementCount;
     // ── Reminder ──
     // `remind:` and `remind_start:` were readable only by hand-editing frontmatter until now.
     // The preview line states the actual clock times, so the setting isn't abstract.
@@ -474,6 +488,27 @@ export class EventModal extends Modal {
     });
     renderRemind();
 
+
+    // ── More options ── trip, location and a per-event reminder are each used on a handful of
+    // events; they fold away unless this event uses one.
+    const advanced = [
+      ...Array.from(contentEl.children).slice(advA, advAEnd),
+      ...Array.from(contentEl.children).slice(advB),
+    ];
+    const uses = !!this.trip || !!this.location || this.remindMode !== "default";
+    const moreToggle = contentEl.createEl("button", { cls: "brewin-more-toggle" });
+    const more = contentEl.createDiv({ cls: "brewin-more" });
+    advanced.forEach((el) => more.appendChild(el));
+    const paint = (on: boolean) => {
+      more.toggleClass("brewin-collapsed", !on);
+      moreToggle.setText(on ? "Fewer options ▴" : "More options ▾ — location, trip, reminder");
+    };
+    paint(uses || EventModal.moreOpen);
+    moreToggle.addEventListener("click", () => {
+      const on = more.hasClass("brewin-collapsed");
+      EventModal.moreOpen = on;
+      paint(on);
+    });
 
     const btns = contentEl.createDiv({ cls: "brewin-capture-buttons" });
     if (this.existing) {

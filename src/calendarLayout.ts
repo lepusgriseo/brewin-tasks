@@ -93,7 +93,7 @@ export function allDaySpans(events: EventItem[], fromISO: string, toISO: string)
 export function taskSpans(tasks: Task[], fromISO: string, toISO: string): AllDaySpan[] {
   const spans: AllDaySpan[] = [];
   for (const t of tasks) {
-    if (t.recurrence || !t.scheduled) continue;
+    if (t.recurrence || !t.scheduled || t.status === "someday") continue;
     if (taskSpanDays(t) <= 1) continue;
     const start = t.scheduled < fromISO ? fromISO : t.scheduled;
     const end = taskLastDay(t)!;

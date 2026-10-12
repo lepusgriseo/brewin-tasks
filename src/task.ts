@@ -11,7 +11,7 @@ export const TASK_TAG = "task";
 
 function asStatus(v: unknown): Status {
   const s = String(v ?? "todo").toLowerCase();
-  return s === "hold" || s === "done" ? (s as Status) : "todo";
+  return s === "hold" || s === "done" || s === "someday" ? (s as Status) : "todo";
 }
 
 function asPriority(v: unknown): Priority {

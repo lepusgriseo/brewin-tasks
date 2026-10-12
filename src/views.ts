@@ -10,6 +10,7 @@ import { effectiveStart, occurrencesInRange, parseRRule } from "./rrule";
 import { doneTimesOn, slotProgress, TaskSlot } from "./slots";
 import { isRecurring, taskCoversDay, taskDayIndex, taskLastDay, taskSpanDays } from "./task";
 import { CalendarItem, CalendarKind, Task } from "./types";
+import { isActive, isCarried } from "./status";
 
 export type DashView = "today" | "week" | "inbox" | "projects" | "attention" | "review" | "all";
 
@@ -23,11 +24,14 @@ export const DASH_VIEWS: { id: DashView; label: string; icon: string }[] = [
   { id: "all", label: "All", icon: "☰" },
 ];
 
-/** One line in the Today timeline. Events are context only — they can't be ticked here. */
+/**
+ * One line in the Today timeline. Events and training sessions are context only — they can't be
+ * ticked here; a training row opens the session in Brewin Fitness instead.
+ */
 export interface AgendaRow {
   time: string; // "HH:MM"
   endTime: string | null;
-  kind: "task" | "slot" | "event";
+  kind: "task" | "slot" | "event" | "training";
   title: string;
   done: boolean;
   path: string;
@@ -53,6 +57,8 @@ export interface TodayAgenda {
   timed: AgendaRow[];
   /** Scheduled for today (or rolled over) but with no particular time. */
   anytime: Task[];
+  /** Planned for a day that has passed: triaged on their own, never placed on today's timeline. */
+  carried: Task[];
   /** All-day events today, shown as a thin context strip. */
   allDayEvents: { title: string; path: string; location: string | null }[];
   doneCount: number;
@@ -60,7 +66,7 @@ export interface TodayAgenda {
 }
 
 function isOpen(t: Task): boolean {
-  return t.status !== "done" && t.status !== "hold";
+  return isActive(t);
 }
 
 /** A task's slots, tolerating notes written before multi-slot tasks existed. */
@@ -82,6 +88,7 @@ export function todayAgenda(
   const overdue: Task[] = [];
   const timed: AgendaRow[] = [];
   const anytime: Task[] = [];
+  const carried: Task[] = [];
   let doneCount = 0;
 
   for (const t of tasks) {
@@ -89,7 +96,7 @@ export function todayAgenda(
       if (t.completed === todayISO) doneCount++;
       continue;
     }
-    if (t.status === "hold") continue;
+    if (!isActive(t)) continue;
 
     // Overdue is judged on the DUE date and pinned separately — a task can be both overdue
     // and scheduled today, and it should appear once, at the top, where it can't be missed.
@@ -98,10 +105,13 @@ export function todayAgenda(
       continue;
     }
 
-    // `scheduled <= today` already covers both cases correctly: a span that started
-    // earlier is still today's work, and one starting tomorrow isn't. A task whose day has
-    // simply passed must keep showing up rather than vanishing, so this is NOT a
-    // `taskCoversDay` check — that would silently drop rolled-over work.
+    // A task whose day has passed must keep showing up rather than vanishing — but as carried
+    // over, for triage, not mixed into today's plan or dropped onto today's timeline at the time
+    // it had on a day long gone. A span that started earlier and is still running is today's.
+    if (isCarried(t, todayISO)) {
+      carried.push(t);
+      continue;
+    }
     if (!t.scheduled || t.scheduled > todayISO) continue;
 
     const slots = slotsOf(t);
@@ -149,7 +159,7 @@ export function todayAgenda(
     timed.push({
       time: ev.start,
       endTime: ev.end,
-      kind: "event",
+      kind: ev.kind === "training" ? "training" : "event",
       title: ev.title,
       done: ev.done,
       path: ev.path,
@@ -164,11 +174,14 @@ export function todayAgenda(
   );
   overdue.sort((a, b) => (a.due ?? "").localeCompare(b.due ?? "") || a.title.localeCompare(b.title));
   anytime.sort(byPriorityThenTitle);
+  // Oldest first: the longest-carried plan is the one most in need of a decision.
+  carried.sort((a, b) => (a.scheduled ?? "").localeCompare(b.scheduled ?? "") || a.title.localeCompare(b.title));
 
+  // "Left" is today's plan. Carried tasks are counted separately until they are accepted back in.
   const openCount =
-    overdue.length + anytime.length + timed.filter((r) => r.kind !== "event" && !r.done).length;
+    overdue.length + anytime.length + timed.filter((r) => r.kind !== "event" && r.kind !== "training" && !r.done).length;
 
-  return { overdue, timed, anytime, allDayEvents, doneCount, openCount };
+  return { overdue, timed, anytime, carried, allDayEvents, doneCount, openCount };
 }
 
 const PRIORITY_RANK: Record<string, number> = { high: 0, normal: 1, low: 2 };
@@ -196,6 +209,9 @@ export function weekAgenda(tasks: Task[], fromISO: string, days = 7): DayGroup[]
   const groups = new Map<string, Task[]>(dates.map((d) => [d, []]));
   for (const t of tasks) {
     if (!isOpen(t)) continue;
+    // Carried-over plans wait in Today's triage group; on the week they used to pile onto the
+    // first day, which is how one Monday column came to hold ten weeks-old tasks.
+    if (isCarried(t, fromISO)) continue;
     const day = t.scheduled ?? t.due;
     if (!day) continue;
 
@@ -319,7 +335,7 @@ export function attentionTasks(tasks: Task[], todayISO: string): AttentionGroups
   const onhold: Task[] = [];
 
   for (const t of tasks) {
-    if (t.status === "done") continue;
+    if (t.status === "done" || t.status === "someday") continue;
     if (t.status === "hold") {
       onhold.push(t);
       continue;
@@ -423,7 +439,7 @@ export function weekTaskReview(
       if (t.completed && t.completed >= fromISO && t.completed <= toISO) doneOneOff.push(t);
       continue;
     }
-    if (t.status === "hold") continue;
+    if (!isActive(t)) continue;
 
     const day = oneOffDay(t);
     if (!day || day < fromISO || day > toISO) continue;
@@ -760,7 +776,7 @@ export function expandRecurringTasks(
   if (!from || !to) return out;
 
   for (const t of tasks) {
-    if (t.status === "done" || t.status === "hold") continue;
+    if (!isActive(t)) continue;
     const rule = parseRRule(t.recurrence);
     if (!rule) continue;
     const anchor = parseISO(t.scheduled ?? t.due ?? fromISO);

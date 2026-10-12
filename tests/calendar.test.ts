@@ -115,3 +115,12 @@ test("drag reschedule helpers", () => {
   // Missing/invalid times default to a 60-min block.
   assert.equal(durationMinutes(null, null), 60);
 });
+
+test("the phone's three-day view starts on the anchor and steps by three", async () => {
+  const { visibleRange, stepAnchor, viewTitle } = await import("../src/calendar");
+  assert.deepEqual(visibleRange("3day", "2026-10-12", 1), { from: "2026-10-12", to: "2026-10-14" });
+  assert.equal(stepAnchor("3day", "2026-10-12", 1), "2026-10-15");
+  assert.equal(stepAnchor("3day", "2026-10-12", -1), "2026-10-09");
+  assert.equal(visibleRange("3day", "2026-10-30", 1).to, "2026-11-01", "across a month end");
+  assert.match(viewTitle("3day", "2026-10-12", 1), /Oct 12 – Oct 14, 2026/);
+});

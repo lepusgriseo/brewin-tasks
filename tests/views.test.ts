@@ -91,9 +91,24 @@ test("overdue is pinned separately and never also listed as today's work", () =>
   assert.equal(a.timed.length, 0);
 });
 
-test("a task scheduled before today rolls into Today rather than vanishing", () => {
+test("a task scheduled before today is carried over rather than vanishing", () => {
   const a = todayAgenda([task({ title: "Rolled over", scheduled: "2026-07-25" })], [], TODAY);
-  assert.deepEqual(a.anytime.map((t) => t.title), ["Rolled over"]);
+  // It used to join "Anytime" with its old date; now it waits in its own group to be triaged.
+  assert.deepEqual(a.carried.map((t) => t.title), ["Rolled over"]);
+  assert.equal(a.anytime.length, 0);
+  assert.equal(a.openCount, 0, "not part of today's plan until accepted back in");
+});
+
+test("a carried timed task never lands on today's timeline at its old time", () => {
+  // The real case: "Update inventory list", planned for 27 Sep at 12:35, appeared at 12:35 today.
+  const a = todayAgenda([task({ title: "Update inventory list", scheduled: "2026-07-20", startTime: "12:35", endTime: "13:35" })], [], TODAY);
+  assert.equal(a.timed.length, 0);
+  assert.deepEqual(a.carried.map((t) => t.title), ["Update inventory list"]);
+});
+
+test("someday tasks never appear in Today", () => {
+  const a = todayAgenda([task({ title: "Flipper Zero", status: "someday", scheduled: TODAY })], [], TODAY);
+  assert.deepEqual([a.anytime.length, a.carried.length, a.openCount], [0, 0, 0]);
 });
 
 test("done-today counts; held and future tasks are excluded", () => {
@@ -129,9 +144,15 @@ test("Week returns 7 consecutive days and keeps empty ones", () => {
   assert.equal(w.find((g) => g.date === "2026-07-28")!.tasks.length, 0); // empty day kept
 });
 
-test("Week folds anything older than the window onto the first day", () => {
-  const w = weekAgenda([task({ title: "Ancient", scheduled: "2026-01-01" })], TODAY, 7);
-  assert.deepEqual(w[0].tasks.map((t) => t.title), ["Ancient"]);
+test("Week folds a missed deadline onto the first day, but leaves carried plans to triage", () => {
+  const w = weekAgenda(
+    [task({ title: "Missed deadline", due: "2026-01-01" }), task({ title: "Old plan", scheduled: "2026-01-01" })],
+    TODAY,
+    7
+  );
+  // An overdue deadline must stay in view; a plan for a passed day waits in Today's carried group.
+  assert.deepEqual(w[0].tasks.map((t) => t.title), ["Missed deadline"]);
+  assert.equal(w.reduce((n, g) => n + g.tasks.length, 0), 1);
 });
 
 test("Week ignores tasks beyond the window and closed ones", () => {

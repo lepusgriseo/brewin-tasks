@@ -1,6 +1,7 @@
-import { App, ItemView, Menu, Modal, Notice, TFile, WorkspaceLeaf } from "obsidian";
+import { App, ItemView, Menu, Modal, Notice, Platform, setIcon, TFile, WorkspaceLeaf } from "obsidian";
+import { groupSomeday, nextWeekStart, relativeDay } from "./status";
 import { classify, groupByContext, groupByDate } from "./buckets";
-import { todayISO } from "./dates";
+import { shiftISO, todayISO } from "./dates";
 import { pickDate } from "./datePicker";
 import { ProjectTask, ProjectTaskSource } from "./projectTasks";
 import { CaptureModal } from "./captureModal";
@@ -112,76 +113,106 @@ export class DashboardView extends ItemView {
     await this.render();
   }
 
+  /** The list area under the controls. Search and filters redraw only this. */
+  private bodyEl: HTMLElement | null = null;
+
   async render(): Promise<void> {
     const root = this.contentEl;
+    // Keep your place: this redraws after every tick and every relevant vault change.
+    const scroll = root.scrollTop;
     root.empty();
     root.addClass("brewin-dashboard");
+    this.renderChrome(root);
+    this.bodyEl = root.createDiv({ cls: "brewin-dash-body" });
+    await this.renderBody();
+    // On a phone, a new task is one thumb-reach away wherever you have scrolled to.
+    if (Platform.isPhone) {
+      const fab = root.createEl("button", { cls: "brewin-fab mod-cta" });
+      setIcon(fab, "plus");
+      fab.setAttr("aria-label", "New task");
+      fab.addEventListener("click", () => new CaptureModal(this.app, this.plugin.store, this.plugin.settings, () => this.render()).open());
+    }
+    root.scrollTop = scroll;
+  }
 
+  /**
+   * Tabs, search and filters. Built once per full render — typing in search must never rebuild
+   * the input itself: on iOS that breaks autocorrect and makes the keyboard flicker.
+   */
+  private renderChrome(root: HTMLElement): void {
     const today = todayISO();
     const allTasks = this.plugin.store.getTasks();
-    this.allTasks = allTasks;
-    // Index over ALL tasks so parent/child relations survive context filtering.
-    this.index = buildIndex(allTasks);
-    let tasks = allTasks;
-    // Case-insensitive, so filtering `obsidian` also catches a note tagged `Obsidian`.
-    if (this.contextFilter) tasks = tasks.filter((t) => hasContext(t.contexts, this.contextFilter!));
-    // Search narrows whatever view is showing rather than replacing it, so you can search
-    // within Inbox, within Today, and so on.
-    if (this.query.trim()) tasks = search(tasks, this.query);
 
-    const buckets = classify(tasks, today);
-
-    // ── Toolbar ──
-    const toolbar = root.createDiv({ cls: "brewin-toolbar" });
-    toolbar.createEl("button", { text: "＋ New task", cls: "mod-cta" }).addEventListener("click", () => {
-      new CaptureModal(this.app, this.plugin.store, this.plugin.settings, () => this.render()).open();
-    });
-    toolbar.createEl("button", { text: "⟳" }).addEventListener("click", () => this.render());
-
-    const searchEl = toolbar.createEl("input", { cls: "brewin-search", type: "search" });
-    searchEl.placeholder = "Search tasks…";
-    searchEl.value = this.query;
-    searchEl.addEventListener("input", () => {
-      this.query = searchEl.value;
-      this.render();
-      // Re-rendering replaces the input, so put the caret back where it was.
-      const again = this.contentEl.querySelector<HTMLInputElement>(".brewin-search");
-      again?.focus();
-      again?.setSelectionRange(again.value.length, again.value.length);
-    });
-
-    const selBtn = toolbar.createEl("button", {
-      text: this.selecting ? "Done" : "☑ Select",
-      cls: this.selecting ? "mod-cta" : "",
-    });
-    selBtn.addEventListener("click", () => {
-      this.selecting = !this.selecting;
-      if (!this.selecting) this.selected.clear();
-      this.render();
-    });
-
-    // ── View switcher ──
+    // ── View switcher: one row, swiped sideways on a phone rather than wrapping onto two ──
     const att = attentionTasks(allTasks, today);
     const attentionCount = att.overdue.length + att.slipped.length;
     const seg = root.createDiv({ cls: "brewin-view-seg" });
     for (const v of DASH_VIEWS) {
       const label = v.id === "attention" && attentionCount ? `${v.icon} ${v.label} (${attentionCount})` : `${v.icon} ${v.label}`;
-      const b = seg.createEl("button", {
-        text: label,
-        cls: this.view === v.id ? "active" : "",
-      });
+      const b = seg.createEl("button", { text: label, cls: this.view === v.id ? "active" : "" });
       b.setAttr("aria-current", String(this.view === v.id));
       b.addEventListener("click", () => {
         this.view = v.id;
         this.render();
       });
     }
+    window.setTimeout(() => seg.querySelector(".active")?.scrollIntoView({ block: "nearest", inline: "center" }), 0);
 
-    // Layout toggle — only Week and Projects have headings to turn into columns.
-    if (this.view === "week" || this.view === "projects") {
+    // ── Toolbar ──
+    const toolbar = root.createDiv({ cls: "brewin-toolbar" });
+    if (!Platform.isPhone) {
+      toolbar.createEl("button", { text: "＋ New task", cls: "mod-cta" }).addEventListener("click", () => {
+        new CaptureModal(this.app, this.plugin.store, this.plugin.settings, () => this.render()).open();
+      });
+    }
+    const searchEl = toolbar.createEl("input", { cls: "brewin-search", type: "search" });
+    searchEl.placeholder = "Search tasks…";
+    searchEl.value = this.query;
+    searchEl.addEventListener("input", () => {
+      this.query = searchEl.value;
+      void this.renderBody();
+    });
+
+    // Context filter — only contexts with OPEN tasks, case-merged, with their counts.
+    const contexts = filterableContexts(allTasks);
+    if (this.contextFilter && !contexts.some((c) => c.value === this.contextFilter)) this.contextFilter = null;
+    if (contexts.length) {
+      const sel = toolbar.createEl("select", { cls: "brewin-context-filter" });
+      sel.createEl("option", { text: "All contexts", value: "" });
+      contexts.forEach((c) => sel.createEl("option", { text: `${c.value} (${c.count})`, value: c.value }));
+      sel.value = this.contextFilter ?? "";
+      sel.addEventListener("change", () => {
+        this.contextFilter = sel.value || null;
+        void this.renderBody();
+      });
+    }
+    // Grouping only exists in All, so it only appears there — it was a third row everywhere else.
+    if (this.view === "all") {
+      toolbar.addClass("has-groupby");
+      const grp = toolbar.createEl("select", { cls: "brewin-groupby" });
+      grp.createEl("option", { text: "Group: date", value: "date" });
+      grp.createEl("option", { text: "Group: context", value: "context" });
+      grp.value = this.groupBy;
+      grp.addEventListener("change", () => {
+        this.groupBy = grp.value === "context" ? "context" : "date";
+        void this.renderBody();
+      });
+    }
+    const selBtn = toolbar.createEl("button", { cls: "brewin-select-toggle" + (this.selecting ? " mod-cta" : "") });
+    selBtn.setText(this.selecting ? "Done" : "☑");
+    selBtn.setAttr("aria-label", this.selecting ? "Finish selecting" : "Select tasks");
+    selBtn.addEventListener("click", () => {
+      this.selecting = !this.selecting;
+      if (!this.selecting) this.selected.clear();
+      this.render();
+    });
+
+    // Layout toggle — only Week and Projects have headings to turn into columns, and a phone is
+    // too narrow for the Week board, so it is not offered there.
+    if (this.view === "projects" || (this.view === "week" && !Platform.isPhone)) {
       const key = this.view === "week" ? "weekLayout" : "projectsLayout";
       const current = this.plugin.settings[key];
-      const lay = seg.createDiv({ cls: "brewin-layout-seg" });
+      const lay = toolbar.createDiv({ cls: "brewin-layout-seg" });
       ([
         ["list", "≡ List"],
         ["board", "▦ Board"],
@@ -198,42 +229,30 @@ export class DashboardView extends ItemView {
     // A fixed host so ticking a box redraws only the bar — a full re-render would drop
     // scroll position and search focus on every tick.
     root.createDiv({ cls: "brewin-bulk-host" });
+  }
 
-    // Context filter — only contexts with OPEN tasks, case-merged, with their counts, so
-    // every option in the list can actually show something.
-    const contexts = filterableContexts(allTasks);
-    if (contexts.length) {
-      const sel = toolbar.createEl("select", { cls: "brewin-context-filter" });
-      sel.createEl("option", { text: "All contexts", value: "" });
-      contexts.forEach((c) => sel.createEl("option", { text: `${c.value} (${c.count})`, value: c.value }));
-      // A previously-selected context can disappear once its last task is done; fall back
-      // to "All" rather than leaving the filter stuck on an option that no longer exists.
-      if (this.contextFilter && !contexts.some((c) => c.value === this.contextFilter)) {
-        this.contextFilter = null;
-        tasks = allTasks;
-      }
-      sel.value = this.contextFilter ?? "";
-      sel.addEventListener("change", () => {
-        this.contextFilter = sel.value || null;
-        this.render();
-      });
+  /** The list for the current view, filtered by context and search. */
+  private async renderBody(): Promise<void> {
+    const root = this.bodyEl;
+    if (!root) return;
+    root.empty();
+    const today = todayISO();
+    const allTasks = this.plugin.store.getTasks();
+    this.allTasks = allTasks;
+    // Index over ALL tasks so parent/child relations survive context filtering.
+    this.index = buildIndex(allTasks);
+    let tasks = allTasks;
+    // Case-insensitive, so filtering `obsidian` also catches a note tagged `Obsidian`.
+    if (this.contextFilter) tasks = tasks.filter((t) => hasContext(t.contexts, this.contextFilter!));
+    // Search narrows whatever view is showing rather than replacing it.
+    if (this.query.trim()) tasks = search(tasks, this.query);
 
-      // Group-by toggle — grouping by context is most useful once a context is selected,
-      // because it then splits the list by the OTHER contexts on those tasks.
-      const grp = toolbar.createEl("select", { cls: "brewin-groupby" });
-      grp.createEl("option", { text: "Group: date", value: "date" });
-      grp.createEl("option", { text: "Group: context", value: "context" });
-      grp.value = this.groupBy;
-      grp.addEventListener("change", () => {
-        this.groupBy = grp.value === "context" ? "context" : "date";
-        this.render();
-      });
-    }
+    const buckets = classify(tasks, today);
 
     // Group-by-context is an "All" refinement; the focused views have their own shape.
     if (this.view === "all" && this.groupBy === "context") {
       this.renderByContext(root, tasks);
-      return;
+      return this.renderBulkBar();
     }
 
     if (this.view === "today") { this.renderToday(root, tasks, today); return this.renderBulkBar(); }
@@ -245,6 +264,7 @@ export class DashboardView extends ItemView {
 
     // ── Buckets (All) ──
     this.section(root, "🔴 Overdue", buckets.overdue, "brewin-overdue");
+    if (buckets.carried.length) this.renderCarried(root, buckets.carried, today);
     this.section(root, "📌 Today", buckets.today, "brewin-today");
 
     if (buckets.upcoming.length) {
@@ -252,23 +272,23 @@ export class DashboardView extends ItemView {
       const body = root.createDiv();
       head.addEventListener("click", () => body.toggleClass("brewin-collapsed", !body.hasClass("brewin-collapsed")));
       for (const group of groupByDate(buckets.upcoming)) {
-        body.createEl("div", { cls: "brewin-date-label", text: group.date });
+        body.createEl("div", { cls: "brewin-date-label", text: relativeDay(group.date, today) });
         group.tasks.forEach((t) => this.taskRow(body, t));
       }
     }
 
     this.section(root, "📥 Unplanned", buckets.unplanned, "brewin-unplanned");
     this.section(root, "⏸ On hold", buckets.onhold, "brewin-onhold");
+    if (buckets.someday.length) this.renderSomeday(root, buckets.someday);
 
     // ── Project tasks ──
-    if (this.plugin.settings.showProjectTasks) {
+    if (this.plugin.settings.showProjectTasks && !this.contextFilter) {
       const src = new ProjectTaskSource(this.app, this.plugin.settings);
       const projTasks = await src.getProjectTasks();
-      const filtered = projTasks.filter((p) => (this.contextFilter ? false : true));
-      if (filtered.length) {
-        this.sectionHeader(root, "⚡ Project tasks", filtered.length);
+      if (projTasks.length) {
+        this.sectionHeader(root, "⚡ Project tasks", projTasks.length);
         const byProject = new Map<string, ProjectTask[]>();
-        filtered.forEach((p) => {
+        projTasks.forEach((p) => {
           if (!byProject.has(p.projectName)) byProject.set(p.projectName, []);
           byProject.get(p.projectName)!.push(p);
         });
@@ -288,14 +308,9 @@ export class DashboardView extends ItemView {
       }
     }
 
-    if (
-      !buckets.overdue.length &&
-      !buckets.today.length &&
-      !buckets.upcoming.length &&
-      !buckets.unplanned.length &&
-      !buckets.onhold.length
-    ) {
-      root.createDiv({ cls: "brewin-empty", text: "No tasks. Press ＋ New task to capture one." });
+    const anything = ["overdue", "carried", "today", "upcoming", "unplanned", "onhold", "someday"] as const;
+    if (anything.every((k) => !buckets[k].length)) {
+      root.createDiv({ cls: "brewin-empty", text: "No tasks. Press ＋ to capture one." });
     }
     this.renderBulkBar();
   }
@@ -449,7 +464,8 @@ export class DashboardView extends ItemView {
     // Held tasks are excluded alongside done ones: parked work isn't something you'd write
     // into the journal as an action, and `expandRecurringTasks` already skips them, so this
     // keeps the recurring and non-recurring paths consistent.
-    const allTasks = this.plugin.store.getTasks().filter((t) => t.status !== "done" && t.status !== "hold");
+    // Active work only: on-hold and someday tasks are not part of planning a week.
+    const allTasks = this.plugin.store.getTasks().filter((t) => t.status === "todo");
     const items: CalendarItem[] = [
       ...eventsToItems(this.plugin.events.getEvents(), from, to),
       ...tasksToItems(allTasks.filter((t) => !t.recurrence), from, to, s.slotBlockMinutes),
@@ -762,6 +778,12 @@ export class DashboardView extends ItemView {
       after(`${changed} task${changed === 1 ? "" : "s"} put on hold.`);
     });
 
+    act("💭 Someday", async () => {
+      // Recurring tasks keep their schedule; a wishlist is for one-offs.
+      const changed = await this.plugin.store.bulkSetStatus(this.selectedTasks().filter((x) => !x.recurrence), "someday");
+      after(`${changed} task${changed === 1 ? "" : "s"} moved to Someday.`);
+    });
+
     act("✓ Complete", async () => {
       const { done, blocked } = await this.plugin.store.bulkComplete(this.selectedTasks());
       after(
@@ -796,6 +818,52 @@ export class DashboardView extends ItemView {
     });
   }
 
+  /** Sections folded away this session, by key — they stay folded across redraws. */
+  private folded = new Set<string>();
+
+  /**
+   * Plans for days that have passed, oldest first, each with one-tap answers. They used to sit in
+   * Today's "Anytime" with their old dates — eight of ten "left" one morning were weeks old.
+   */
+  private renderCarried(root: HTMLElement, tasks: Task[], today: string): void {
+    const head = this.sectionHeader(root, "⏳ Carried over", tasks.length);
+    const allBtn = head.createEl("button", { text: "All to today", cls: "brewin-chip-mini" });
+    allBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const n = await this.plugin.store.bulkReschedule(tasks, today);
+      new Notice(`Moved ${n} task${n === 1 ? "" : "s"} to today.`);
+      this.render();
+    });
+    const body = root.createDiv({ cls: "brewin-carried" });
+    this.foldable(head, body, "carried");
+    tasks.forEach((t) => this.taskRow(body, t, false, false, { triage: true }));
+  }
+
+  /** Someday: things that will never get a date, read as lists — one per context. */
+  private renderSomeday(root: HTMLElement, tasks: Task[]): void {
+    const head = this.sectionHeader(root, "💭 Someday", tasks.length);
+    const body = root.createDiv({ cls: "brewin-someday" });
+    this.foldable(head, body, "someday");
+    for (const g of groupSomeday(tasks)) {
+      const label = body.createDiv({ cls: "brewin-date-label" });
+      label.createSpan({ text: g.context ? `@${g.context}` : "No context" });
+      label.createSpan({ cls: "brewin-count", text: String(g.tasks.length) });
+      g.tasks.forEach((t) => this.taskRow(body, t));
+    }
+  }
+
+  /** Tap a section header to fold it; remembered for the rest of the session. */
+  private foldable(head: HTMLElement, body: HTMLElement, key: string): void {
+    body.toggleClass("brewin-collapsed", this.folded.has(key));
+    head.addClass("is-foldable");
+    head.addEventListener("click", () => {
+      const now = !this.folded.has(key);
+      if (now) this.folded.add(key);
+      else this.folded.delete(key);
+      body.toggleClass("brewin-collapsed", now);
+    });
+  }
+
   // ── Views ──────────────────────────────────────────────────────────────────
 
   /** Today: overdue pinned on top, then the day in clock order, then anything undated. */
@@ -803,13 +871,16 @@ export class DashboardView extends ItemView {
     const events = this.plugin.settings.showEventsOnCalendar
       ? eventsToItems(this.plugin.events.getEvents(), today, today)
       : [];
-    const a = todayAgenda(tasks, events, today);
+    // Today's training from the Fitness plan sits in the timeline with everything else.
+    const a = todayAgenda(tasks, [...events, ...this.plugin.trainingItems(today, today)], today);
 
     const head = root.createDiv({ cls: "brewin-today-head" });
     head.createSpan({ cls: "brewin-today-date", text: prettyDate(today) });
+    // "Left" is today's plan; carried-over tasks are counted apart until they are accepted back in.
+    const carried = a.carried.length ? ` · ${a.carried.length} carried` : "";
     head.createSpan({
       cls: "brewin-count",
-      text: a.openCount === 0 ? `all clear · ${a.doneCount} done` : `${a.openCount} left · ${a.doneCount} done`,
+      text: (a.openCount === 0 ? `all clear · ${a.doneCount} done` : `${a.openCount} left · ${a.doneCount} done`) + carried,
     });
     const autoBtn = head.createEl("button", { text: "⚡ Auto-schedule today", cls: "brewin-chip-mini" });
     autoBtn.addEventListener("click", async () => {
@@ -848,9 +919,11 @@ export class DashboardView extends ItemView {
     if (a.allDayEvents.length) {
       const strip = root.createDiv({ cls: "brewin-allday-strip" });
       a.allDayEvents.forEach((e) => {
-        const chip = strip.createSpan({ cls: "brewin-allday-chip", text: e.title });
+        const isTraining = e.path.startsWith("training:");
+        const chip = strip.createSpan({ cls: "brewin-allday-chip" + (isTraining ? " is-training" : ""), text: isTraining ? `🛌 ${e.title}` : e.title });
         if (e.location) chip.setAttr("title", `📍 ${e.location}`);
-        chip.addEventListener("click", () => this.openNote(e.path));
+        // A rest day from the Fitness plan has no note behind it to open.
+        if (!isTraining) chip.addEventListener("click", () => this.openNote(e.path));
       });
     }
 
@@ -860,10 +933,23 @@ export class DashboardView extends ItemView {
       a.overdue.forEach((t) => this.taskRow(band, t));
     }
 
+    if (a.carried.length) this.renderCarried(root, a.carried, today);
+
     if (a.timed.length) {
-      this.sectionHeader(root, "⏰ Timed", a.timed.filter((r) => r.kind !== "event").length);
+      this.sectionHeader(root, "⏰ Timed", a.timed.filter((r) => r.kind !== "event" && r.kind !== "training").length);
       const body = root.createDiv();
+      const trainingByTitle = new Map(this.plugin.trainingItems(today, today).map((it) => [it.title, it]));
       for (const row of a.timed) {
+        if (row.kind === "training") {
+          // A session from the Fitness plan: tap to start it, or to open it once it is going.
+          const item = trainingByTitle.get(row.title);
+          const line = body.createDiv({ cls: "brewin-agenda-row is-training" + (row.done ? " done" : "") });
+          line.createSpan({ cls: "brewin-agenda-time", text: row.time });
+          line.createSpan({ cls: "brewin-agenda-title", text: `${row.done ? "✓" : "▲"} ${row.title}` });
+          line.setAttr("aria-label", row.done ? "Training — open the session" : "Training — start the session");
+          if (item) line.addEventListener("click", () => void this.plugin.openTraining(item));
+          continue;
+        }
         if (row.kind === "event") {
           // Context only — an event isn't yours to tick from the task dashboard.
           const line = body.createDiv({ cls: "brewin-agenda-row is-event" });
@@ -901,7 +987,7 @@ export class DashboardView extends ItemView {
       a.anytime.forEach((t) => this.taskRow(body, t));
     }
 
-    if (!a.overdue.length && !a.timed.length && !a.anytime.length) {
+    if (!a.overdue.length && !a.timed.length && !a.anytime.length && !a.carried.length) {
       root.createDiv({
         cls: "brewin-empty",
         text: a.doneCount ? "Everything for today is done." : "Nothing scheduled for today.",
@@ -914,7 +1000,8 @@ export class DashboardView extends ItemView {
     const days = weekAgenda(tasks, today, 7);
     const total = days.reduce((n, d) => n + d.tasks.length, 0);
 
-    if (this.plugin.settings.weekLayout === "board") {
+    // Seven board columns on a phone showed a day and a half; the list reads the whole week.
+    if (this.plugin.settings.weekLayout === "board" && !Platform.isPhone) {
       // The board stays up even when empty — its columns ARE the information.
       const board = root.createDiv({ cls: "brewin-board" });
       for (const day of days) {
@@ -951,12 +1038,14 @@ export class DashboardView extends ItemView {
   /** Inbox: undated captures, to be triaged until empty. */
   private renderInbox(root: HTMLElement, tasks: Task[]): void {
     const list = inboxTasks(tasks);
+    const someday = tasks.filter((t) => t.status === "someday");
     if (!list.length) {
-      root.createDiv({ cls: "brewin-empty", text: "Inbox zero — everything has a date." });
-      return;
+      root.createDiv({ cls: "brewin-empty", text: "Inbox zero — everything has a date or a Someday." });
+    } else {
+      this.sectionHeader(root, "📥 Needs scheduling", list.length);
+      list.forEach((t) => this.taskRow(root, t));
     }
-    this.sectionHeader(root, "📥 Needs scheduling", list.length);
-    list.forEach((t) => this.taskRow(root, t));
+    if (someday.length) this.renderSomeday(root, someday);
   }
 
   /** Attention: a broken promise and a slipped plan are different problems. */
@@ -979,8 +1068,15 @@ export class DashboardView extends ItemView {
       g.overdue.forEach((t) => this.taskRow(band, t));
     }
     if (g.slipped.length) {
-      this.sectionHeader(root, "⏳ Slipped — planned for a day that's gone", g.slipped.length);
-      g.slipped.forEach((t) => this.taskRow(root, t));
+      const head = this.sectionHeader(root, "⏳ Slipped — planned for a day that's gone", g.slipped.length);
+      const allBtn = head.createEl("button", { text: "All to today", cls: "brewin-chip-mini" });
+      allBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const n = await this.plugin.store.bulkReschedule(g.slipped, today);
+        new Notice(`Moved ${n} task${n === 1 ? "" : "s"} to today.`);
+        this.render();
+      });
+      g.slipped.forEach((t) => this.taskRow(root, t, false, false, { triage: true }));
     }
     if (g.onhold.length) {
       this.sectionHeader(root, "⏸ On hold", g.onhold.length);
@@ -1064,7 +1160,7 @@ export class DashboardView extends ItemView {
     items.forEach((t) => this.taskRow(body, t));
   }
 
-  private taskRow(parent: HTMLElement, task: Task, isDone = false, isSubtask = false): void {
+  private taskRow(parent: HTMLElement, task: Task, isDone = false, isSubtask = false, opts: { triage?: boolean } = {}): void {
     const row = parent.createDiv({ cls: "brewin-task-row" + (isSubtask ? " brewin-subtask-row" : "") });
 
     const kids = childrenOf(this.index, task);
@@ -1178,11 +1274,18 @@ export class DashboardView extends ItemView {
     }
 
     const meta = main.createDiv({ cls: "brewin-task-meta" });
-    if (task.scheduled) {
+    // Dates said the way they matter — "16 days ago", "Fri", "24 Dec" — with the exact date a
+    // long-press away, rather than an ISO string to decode.
+    // Planned and due the same day: the deadline says it once, rather than the same date twice.
+    if (task.scheduled && !(task.due === task.scheduled && !task.startTime)) {
       const time = task.startTime ? ` ${task.startTime}${task.endTime ? `–${task.endTime}` : ""}` : "";
-      meta.createSpan({ cls: "brewin-meta-sched", text: `📅 ${task.scheduled}${time}` });
+      const s = meta.createSpan({ cls: "brewin-meta-sched", text: `📅 ${relativeDay(task.scheduled, today)}${time}` });
+      s.setAttr("title", task.scheduled);
     }
-    if (task.due) meta.createSpan({ cls: "brewin-meta-due", text: `🚩 ${task.due}` });
+    if (task.due) {
+      const d = meta.createSpan({ cls: "brewin-meta-due", text: `🚩 ${task.due < today ? relativeDay(task.due, today) : `due ${relativeDay(task.due, today)}`}` });
+      d.setAttr("title", `Due ${task.due}`);
+    }
     task.contexts.forEach((c) => meta.createSpan({ cls: "brewin-meta-ctx", text: `@${c}` }));
     // Parent breadcrumb (skip when already shown nested under that parent)
     if (task.parentPath && !isSubtask) {
@@ -1191,6 +1294,25 @@ export class DashboardView extends ItemView {
         const crumb = meta.createSpan({ cls: "brewin-parent-crumb", text: `↳ ${p.title}` });
         crumb.addEventListener("click", () => this.openNote(p.path));
       }
+    }
+
+    // Carried over: answer "when, then?" in one tap instead of opening the task. The strip is
+    // added to the row after its action icons, so it spans the row's full width underneath.
+    let triageStrip: HTMLElement | null = null;
+    if (opts.triage && task.status !== "done") {
+      const strip = createDiv({ cls: "brewin-triage" });
+      triageStrip = strip;
+      const act = (label: string, fn: () => Promise<void>) =>
+        strip.createEl("button", { text: label, cls: "brewin-triage-btn" }).addEventListener("click", async (e) => {
+          e.stopPropagation();
+          await fn();
+          this.render();
+        });
+      act("Today", () => this.plugin.store.setScheduled(task, today));
+      act("Tomorrow", () => this.plugin.store.setScheduled(task, shiftISO(today, 1)));
+      act("Next week", () => this.plugin.store.setScheduled(task, nextWeekStart(today, this.plugin.settings.firstDayOfWeek)));
+      // A recurring task's next occurrence is not a wish; it stays on its schedule.
+      if (!task.recurrence) act("Someday", () => this.plugin.store.setStatus(task, "someday"));
     }
 
     if (!isDone) {
@@ -1209,6 +1331,7 @@ export class DashboardView extends ItemView {
       });
       this.iconBtn(actions, "⋯", "More", (ev) => this.rowMenu(ev, task));
     }
+    if (triageStrip) row.appendChild(triageStrip);
 
     // Expanded slot list — tick any specific time, not just the next one.
     if (sp && this.expanded.has(task.path)) {
@@ -1259,8 +1382,13 @@ export class DashboardView extends ItemView {
     }));
     if (task.status === "hold") {
       menu.addItem((i) => i.setTitle("Un-hold").setIcon("play").onClick(async () => { await this.plugin.store.setStatus(task, "todo"); this.render(); }));
-    } else {
+    } else if (task.status !== "someday") {
       menu.addItem((i) => i.setTitle("Put on hold").setIcon("pause").onClick(async () => { await this.plugin.store.setStatus(task, "hold"); this.render(); }));
+    }
+    if (task.status === "someday") {
+      menu.addItem((i) => i.setTitle("Back to the inbox").setIcon("inbox").onClick(async () => { await this.plugin.store.setStatus(task, "todo"); this.render(); }));
+    } else if (!task.recurrence && task.status !== "done") {
+      menu.addItem((i) => i.setTitle("Move to Someday").setIcon("cloud").onClick(async () => { await this.plugin.store.setStatus(task, "someday"); this.render(); }));
     }
     menu.addSeparator();
 

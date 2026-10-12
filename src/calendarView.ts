@@ -1,9 +1,9 @@
-import { ItemView, Menu, Notice, TFile, WorkspaceLeaf } from "obsidian";
+import { ItemView, Menu, Notice, Platform, setIcon, TFile, WorkspaceLeaf } from "obsidian";
 import { addDays, addMinutesHM, dayDelta, durationMinutes, formatHM, formatISO, isoWeekOf, monthMatrix, monthOf, nowMinutes, parseISO, shiftISO, shortDate, todayISO, weekDates, weekdayHeaders } from "./dates";
 import { blockRange, CalView, stepAnchor, timeBox, viewTitle, visibleRange } from "./calendar";
 import { slotProgress } from "./slots";
 import { attachLongPressDrag, attachLongPressTap, hapticTick } from "./dragHandle";
-import { eventsToItems, groupItemsByDay, projectTasksToItems, sortItems, tasksToItems } from "./calendarItem";
+import { eventsToItems, groupItemsByDay, projectTasksToItems, tasksToItems } from "./calendarItem";
 import { allDaySpans, BarSegment, laneCount, packOverlaps, segmentsForWeek, taskSpans } from "./calendarLayout";
 import { EventModal } from "./eventModal";
 import type { DropIntent } from "./eventStore";
@@ -51,11 +51,15 @@ export class CalendarView extends ItemView {
    *  ("2026-09"). Absent = use the section's computed default. In-memory: survives `render()`
    *  and month navigation, resets when the pane is reopened (like `this.view`). */
   private sectionOpen = new Map<string, boolean>();
+  /** Phones only: whether the kinds/categories legend is showing. */
+  private legendOpen = false;
 
   constructor(leaf: WorkspaceLeaf, private plugin: BrewinTasksPlugin) {
     super(leaf);
-    // Nothing persists which view was open, so every fresh pane opens on the configured default.
-    this.view = this.plugin.settings.defaultCalendarView;
+    // Nothing persists which view was open, so every fresh pane opens on the configured default —
+    // except that a phone's "week" is three days: seven columns cannot be read at that width.
+    const preferred = this.plugin.settings.defaultCalendarView;
+    this.view = Platform.isPhone && preferred === "week" ? "3day" : preferred;
     this.projectSource = new ProjectTaskSource(this.app, this.plugin.settings);
     // Move the line rather than re-rendering — a full redraw every minute would fight
     // with scrolling and drag operations.
@@ -130,6 +134,8 @@ export class CalendarView extends ItemView {
       const pts = await this.projectSource.getProjectTasks(true); // active projects only
       items.push(...projectTasksToItems(pts, from, to, PROJECTS_CATEGORY));
     }
+    // Brewin Fitness's plan — one source of truth for training instead of hand-made events.
+    items.push(...this.plugin.trainingItems(from, to).filter((it) => catShown(it.category)));
     if (token !== this.renderToken) return; // a newer render superseded this one
 
     const byDay = groupItemsByDay(items);
@@ -167,6 +173,9 @@ export class CalendarView extends ItemView {
       } else {
         this.renderTimeGrid(root, byDay, spans, days);
       }
+    } else if (this.view === "3day") {
+      const a = parseISO(this.anchor)!;
+      this.renderTimeGrid(root, byDay, spans, [0, 1, 2].map((n) => formatISO(addDays(a, n))));
     } else {
       this.renderTimeGrid(root, byDay, spans, [this.anchor]);
     }
@@ -182,8 +191,11 @@ export class CalendarView extends ItemView {
 
     const right = bar.createDiv({ cls: "brewin-cal-right" });
     const seg = right.createDiv({ cls: "brewin-cal-seg" });
-    (["month", "week", "day"] as CalView[]).forEach((v) => {
-      const b = seg.createEl("button", { text: v[0].toUpperCase() + v.slice(1), cls: this.view === v ? "active" : "" });
+    const views: [CalView, string][] = Platform.isPhone
+      ? [["month", "Month"], ["3day", "3 days"], ["day", "Day"]]
+      : [["month", "Month"], ["week", "Week"], ["day", "Day"]];
+    views.forEach(([v, label]) => {
+      const b = seg.createEl("button", { text: label, cls: this.view === v ? "active" : "" });
       b.addEventListener("click", () => { this.view = v; this.render(); });
     });
     // Grid resolution — only meaningful where there's an hour grid to zoom.
@@ -201,10 +213,24 @@ export class CalendarView extends ItemView {
       });
     }
 
-    const archiveBtn = right.createEl("button", { text: "🗄" });
+    // On a phone the colour legend took three rows before the calendar began; it folds behind a
+    // button there, and stays open on a desktop where there is room for it.
+    if (Platform.isPhone) {
+      const filter = right.createEl("button", { cls: "clickable-icon brewin-cal-filter" + (this.legendOpen ? " is-active" : "") });
+      setIcon(filter, "filter");
+      filter.setAttr("aria-label", "Show or hide kinds and categories");
+      filter.addEventListener("click", () => {
+        this.legendOpen = !this.legendOpen;
+        this.render();
+      });
+    }
+    const archiveBtn = right.createEl("button", { text: "🗄", cls: "brewin-cal-archive" });
     archiveBtn.setAttr("aria-label", "Archive past events");
     archiveBtn.addEventListener("click", () => this.plugin.archivePastEventsFlow());
-    right.createEl("button", { text: "＋ Event", cls: "mod-cta" }).addEventListener("click", () => this.newEvent(this.anchor));
+    // "＋ Event" was cut off at the right edge of a phone; the icon alone always fits.
+    const add = right.createEl("button", { text: Platform.isPhone ? "＋" : "＋ Event", cls: "mod-cta brewin-cal-add" });
+    add.setAttr("aria-label", "New event");
+    add.addEventListener("click", () => this.newEvent(this.anchor));
   }
 
   private step(dir: number): void {
@@ -518,6 +544,7 @@ export class CalendarView extends ItemView {
 
   /** Interactive legend: click a layer or category to show/hide it (persisted in settings). */
   private renderLegend(root: HTMLElement): void {
+    if (Platform.isPhone && !this.legendOpen) return;
     const s = this.plugin.settings;
     const bar = root.createDiv({ cls: "brewin-cal-legend" });
 
@@ -706,7 +733,7 @@ export class CalendarView extends ItemView {
 
   private chip(it: CalendarItem): HTMLElement {
     const el = createDiv({ cls: `brewin-chip-item kind-${it.kind} ${it.done ? "done" : ""}` });
-    if (it.kind === "event" || it.kind === "project") {
+    if (it.kind === "event" || it.kind === "project" || it.kind === "training") {
       const color = categoryColor(this.plugin.settings, it.category);
       el.style.borderLeftColor = color;
       el.style.background = `color-mix(in srgb, ${color} 20%, var(--background-modifier-hover))`;
@@ -716,14 +743,16 @@ export class CalendarView extends ItemView {
     }
     if (it.kind === "event" && it.location) el.setAttr("title", `📍 ${it.location}`);
     if (it.category === "Archived") el.addClass("brewin-archived");
-    const glyph = it.kind === "task" ? "●" : it.kind === "event" ? "▮" : it.kind === "project" ? "◆" : "◇";
+    const glyph = it.kind === "task" ? "●" : it.kind === "event" ? "▮" : it.kind === "project" ? "◆" : it.kind === "training" ? "▲" : "◇";
     el.createSpan({ cls: "g", text: glyph + " " });
-    const label = (it.recurring ? "🔁 " : "") + (it.start ? `${it.start} ${it.title}` : it.title);
+    // A training session repeats by plan, not by RRULE — the 🔁 would be noise on every one.
+    const label = (it.recurring && it.kind !== "training" ? "🔁 " : "") + (it.start ? `${it.start} ${it.title}` : it.title);
     el.createSpan({ text: label });
     el.addEventListener("click", (e) => {
       e.stopPropagation();
       if (this.consumeClick()) return;
       else if (it.kind === "project") void this.openProjectLine(it);
+      else if (it.kind === "training") void this.plugin.openTraining(it);
       else this.openEdit(it);
     });
     if (it.kind === "event") {
@@ -849,7 +878,7 @@ export class CalendarView extends ItemView {
         const box = timeBox(it.start, it.end, hourPx);
         const place = places[idx];
         const ev = col.createDiv({ cls: `brewin-tg-event kind-${it.kind} ${it.done ? "done" : ""}` });
-        if (it.kind === "event") {
+        if (it.kind === "event" || it.kind === "training") {
           const color = categoryColor(this.plugin.settings, it.category);
           ev.style.borderLeftColor = color;
           ev.style.background = `color-mix(in srgb, ${color} 25%, var(--background-primary))`;
@@ -860,7 +889,7 @@ export class CalendarView extends ItemView {
         ev.style.left = `calc(${(place.column / place.columns) * 100}% + 2px)`;
         ev.style.width = `calc(${(place.span / place.columns) * 100}% - 4px)`;
         if (place.columns > 1) ev.addClass("shared");
-        ev.createDiv({ cls: "t", text: (it.recurring ? "🔁 " : "") + it.title });
+        ev.createDiv({ cls: "t", text: (it.kind === "training" ? (it.done ? "✓ " : "▲ ") : it.recurring ? "🔁 " : "") + it.title });
         if (it.start) ev.createDiv({ cls: "time", text: it.end ? `${it.start}–${it.end}` : it.start });
         if (it.location) ev.createDiv({ cls: "loc", text: `📍 ${it.location}` });
         ev.addEventListener("click", (e) => {
@@ -872,7 +901,8 @@ export class CalendarView extends ItemView {
           // before it arrives; it opens edit instead, same as a plain future chip would.
           const currentTask = it.slotTime ? this.plugin.store.getByPath(it.path) : null;
           const currentOcc = currentTask ? (currentTask.recurrenceAnchor === "due" ? currentTask.due : currentTask.scheduled) : null;
-          if (it.slotTime && currentTask && it.date === currentOcc) void this.toggleSlot(it);
+          if (it.kind === "training") void this.plugin.openTraining(it);
+          else if (it.slotTime && currentTask && it.date === currentOcc) void this.toggleSlot(it);
           else this.openEdit(it);
         });
         if (it.kind === "event") {
@@ -899,7 +929,9 @@ export class CalendarView extends ItemView {
    *  not owned by this store). Recurring tasks and events both drag — the drop asks which
    *  occurrences to move, same "single/following/all" scope either kind. */
   private makeDraggable(el: HTMLElement, item: CalendarItem): void {
-    if (item.kind === "project") return;
+    // Project tasks belong to their project note and training to the Fitness plan; neither is
+    // this calendar's to move.
+    if (item.kind === "project" || item.kind === "training") return;
     el.addClass("brewin-draggable");
 
     let ghost: HTMLElement | null = null;

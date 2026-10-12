@@ -1,4 +1,4 @@
-import { Notice, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
+import { Notice, Platform, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
 import { BrewinSettings, BrewinSettingTab, DEFAULT_SETTINGS } from "./settings";
 import { TaskStore } from "./taskStore";
 import { CaptureModal } from "./captureModal";
@@ -22,6 +22,8 @@ import { CalendarItem } from "./types";
 import { TemplateStore } from "./templateStore";
 import { TemplateSuggestModal } from "./templateSuggestModal";
 import { DEFAULT_TEMPLATE_ICON, PlannerTemplate, templateCommandId } from "./plannerTemplate";
+import { archivable } from "./status";
+import { parseTimes, planIsRest, planSlots, TrainingSource, trainingItems } from "./training";
 
 /** Heading the weekly-review command fills. Must match `_Template/Weekly Review.md`. */
 const TASK_SECTION_HEADING = "### Tasks this week";
@@ -170,18 +172,118 @@ export default class BrewinTasksPlugin extends Plugin {
     // Refresh open dashboards when task/project notes change. Skip our own Tasks Backlog.md —
     // otherwise writing it would re-trigger this listener, recompute it again, write again,
     // forever.
-    const onVaultChange = (file: TAbstractFile) => {
+    //
+    // Only changes under folders the Planner draws from count. Listening to the whole vault meant
+    // editing any note — or a sync landing — rebuilt the calendar and threw the dashboard back to
+    // its top, which on a phone is most of the time.
+    const onVaultChange = (file: TAbstractFile, oldPath?: string) => {
       if (file.path === this.backlog.notePath) return;
+      if (!this.isOurs(file.path) && !(oldPath && this.isOurs(oldPath))) return;
       this.queueRefresh();
     };
-    this.registerEvent(this.app.metadataCache.on("changed", onVaultChange));
-    this.registerEvent(this.app.vault.on("create", onVaultChange));
-    this.registerEvent(this.app.vault.on("delete", onVaultChange));
-    this.registerEvent(this.app.vault.on("rename", onVaultChange));
+    this.registerEvent(this.app.metadataCache.on("changed", (f) => onVaultChange(f)));
+    this.registerEvent(this.app.vault.on("create", (f) => onVaultChange(f)));
+    this.registerEvent(this.app.vault.on("delete", (f) => onVaultChange(f)));
+    this.registerEvent(this.app.vault.on("rename", (f, old) => onVaultChange(f, old)));
+
+    this.app.workspace.onLayoutReady(() => {
+      // A phone restores its layout from its own workspace file, so a dashboard an earlier version
+      // put in the right drawer would sit there until next opened. Clear it out on load.
+      if (Platform.isMobile) {
+        const { workspace } = this.app;
+        for (const type of [BREWIN_VIEW_TYPE, TIME_VIEW_TYPE]) {
+          for (const leaf of workspace.getLeavesOfType(type)) {
+            const root = leaf.getRoot();
+            if (root === workspace.leftSplit || root === workspace.rightSplit) leaf.detach();
+          }
+        }
+      }
+      // Give the metadata cache a moment to finish indexing before deciding what is old enough.
+      window.setTimeout(() => void this.fileAwayDoneTasks(), 4000);
+    });
   }
 
   onunload(): void {
     // Leaves are cleaned up by Obsidian; nothing else to tear down.
+  }
+
+  /** Folders whose notes change what the Planner shows — its own, and Fitness's for training. */
+  private isOurs(path: string): boolean {
+    const s = this.settings;
+    const fitness = this.fitness()?.settings as { sessionsFolder?: string; plansFolder?: string } | undefined;
+    const folders = [
+      s.itemsFolder, s.routinesFolder, s.eventsFolder, s.projectsFolder, s.tripsFolder,
+      s.templatesFolder, s.accountabilityFolder, fitness?.sessionsFolder, fitness?.plansFolder,
+    ];
+    return folders.some((f) => !!f && (path === `${f}.md` || path.startsWith(`${f}/`)));
+  }
+
+  // ── Done tasks file themselves away ───────────────────────────────────────
+
+  private lastFiledOn = "";
+  private filing = false;
+
+  /**
+   * Move done tasks into the Done folder once they are a few days old. The command existed but had
+   * filed 3 of 102, which left the Items folder mostly finished work. Runs at most once a day.
+   */
+  private async fileAwayDoneTasks(): Promise<void> {
+    const today = todayISO();
+    if (this.filing || this.lastFiledOn === today) return;
+    this.lastFiledOn = today;
+    const due = archivable(this.store.getTasks(), today, this.settings.autoArchiveDoneDays, this.settings.doneFolder);
+    if (!due.length) return;
+    this.filing = true;
+    try {
+      const n = await this.store.archiveTasks(due);
+      if (n >= 5) new Notice(`Filed ${n} completed task${n === 1 ? "" : "s"} into Done.`);
+    } finally {
+      this.filing = false;
+    }
+  }
+
+  // ── Brewin Fitness's plan, on the calendar ────────────────────────────────
+
+  /** The Fitness plugin, when it is installed and enabled. */
+  private fitness(): any | null {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    return (this.app as any).plugins?.plugins?.["brewin-fitness"] ?? null;
+  }
+
+  /**
+   * What Fitness has scheduled, read once: the active plan and the sessions index. Asking Fitness
+   * per day would re-read every session note for every day of a month view.
+   */
+  private trainingSource(): TrainingSource | null {
+    if (!this.settings.trainingOnCalendar) return null;
+    const fit = this.fitness();
+    const plan = fit?.plans?.getActivePlan?.();
+    if (!plan?.schedule) return null;
+    const sessions: Array<{ path: string; date: string; routine: string | null; status: string }> = fit.sessions?.getSessions?.() ?? [];
+    const byKey = new Map(sessions.filter((s) => s.routine).map((s) => [`${s.date}|${s.routine!.toLowerCase()}`, s]));
+    return {
+      slots: (d) => planSlots(plan.schedule, d),
+      isRest: (d) => planIsRest(plan.schedule, d),
+      session: (routine, d) => {
+        const s = byKey.get(`${d}|${routine.toLowerCase()}`);
+        return s ? { path: s.path, status: s.status } : null;
+      },
+    };
+  }
+
+  /** Training sessions from the Fitness plan, as calendar items. Empty when Fitness is not on. */
+  trainingItems(fromISO: string, toISO: string): CalendarItem[] {
+    const src = this.trainingSource();
+    if (!src) return [];
+    return trainingItems(src, fromISO, toISO, parseTimes(this.settings.trainingTimes), this.settings.trainingMinutes);
+  }
+
+  /** Open a training item: the logged session if there is one, else start it in Fitness. */
+  async openTraining(item: CalendarItem): Promise<void> {
+    const fit = this.fitness();
+    if (!fit || !item.training || item.training.rest) return;
+    if (item.training.sessionPath) await fit.openSession?.(item.training.sessionPath);
+    else await fit.startScheduledRoutine?.(item.training.routine, item.date);
   }
 
   private isTaskFile(path: string): boolean {
@@ -325,30 +427,55 @@ export default class BrewinTasksPlugin extends Plugin {
   }
 
   async activateView(): Promise<void> {
-    await this.reveal(BREWIN_VIEW_TYPE);
+    await this.reveal(BREWIN_VIEW_TYPE, this.sideOrMain());
   }
 
   async activateCalendar(): Promise<void> {
-    await this.reveal(CALENDAR_VIEW_TYPE, true);
+    await this.reveal(CALENDAR_VIEW_TYPE, "main");
   }
 
   async activateTime(): Promise<void> {
-    await this.reveal(TIME_VIEW_TYPE);
+    await this.reveal(TIME_VIEW_TYPE, this.sideOrMain());
   }
 
-  private async reveal(type: string, mainPane = false): Promise<void> {
+  /** On a phone the right sidebar is a drawer, which is where the dashboard used to end up hidden. */
+  private sideOrMain(): "main" | "sidebar" {
+    return this.settings.dashboardInSidebar && !Platform.isMobile ? "sidebar" : "main";
+  }
+
+  /**
+   * Show a view where it belongs. A leaf found in the wrong place is closed rather than reused —
+   * otherwise a layout saved by an older version would keep restoring it there.
+   */
+  private async reveal(type: string, where: "main" | "sidebar"): Promise<void> {
     const { workspace } = this.app;
-    let leaf = workspace.getLeavesOfType(type)[0];
+    const inSidebar = (l: WorkspaceLeaf) => {
+      const root = l.getRoot();
+      return root === workspace.leftSplit || root === workspace.rightSplit;
+    };
+    const wantSidebar = where === "sidebar";
+    let leaf: WorkspaceLeaf | null = null;
+    for (const l of workspace.getLeavesOfType(type)) {
+      if (inSidebar(l) === wantSidebar && !leaf) leaf = l;
+      else if (inSidebar(l) !== wantSidebar) l.detach();
+    }
     if (!leaf) {
-      // Calendar wants a big main-pane leaf; dashboards go in the right sidebar.
-      leaf = mainPane ? workspace.getLeaf(true) : workspace.getRightLeaf(false) ?? workspace.getLeaf(true);
+      leaf = wantSidebar ? workspace.getRightLeaf(false) ?? workspace.getLeaf("tab") : workspace.getLeaf("tab");
       await leaf.setViewState({ type, active: true });
     }
-    workspace.revealLeaf(leaf);
+    await workspace.revealLeaf(leaf);
   }
 
   /** Open a note by vault path — used by reminder popups. */
   async openPath(path: string): Promise<void> {
+    if (path.startsWith("training:")) {
+      // "training:<date>:<routine>" — a session not started yet. Start it in Fitness.
+      const [, date, ...rest] = path.split(":");
+      const routine = rest.join(":");
+      const item = this.trainingItems(date, date).find((it) => it.title === routine);
+      if (item) await this.openTraining(item);
+      return;
+    }
     const file = this.app.vault.getAbstractFileByPath(path);
     if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
     else new Notice("Note not found: " + path);
@@ -430,6 +557,7 @@ export default class BrewinTasksPlugin extends Plugin {
     window.setTimeout(() => {
       this.refreshQueued = false;
       void this.backlog.writeOwn(this.store.getTasks(), todayISO());
+      void this.fileAwayDoneTasks();
       this.refreshViews();
     }, 300);
   }

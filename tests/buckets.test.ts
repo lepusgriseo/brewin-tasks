@@ -29,18 +29,23 @@ test("bucket classification", () => {
   const tasks = [
     mk({ title: "overdue", due: "2026-07-20" }),
     mk({ title: "todayByScheduled", scheduled: "2026-07-24" }),
-    mk({ title: "pastScheduledStillToday", scheduled: "2026-07-10" }),
+    mk({ title: "pastScheduledCarried", scheduled: "2026-07-10" }),
+    mk({ title: "spanStillRunning", scheduled: "2026-07-20", endDate: "2026-07-26" }),
     mk({ title: "upcoming", scheduled: "2026-07-30" }),
     mk({ title: "unplanned" }),
     mk({ title: "onhold", status: "hold", scheduled: "2026-07-24" }),
+    mk({ title: "wishlist", status: "someday" }),
     mk({ title: "done", status: "done" }),
   ];
   const b = classify(tasks, TODAY);
   assert.deepEqual(b.overdue.map((t) => t.title), ["overdue"]);
-  assert.deepEqual(b.today.map((t) => t.title).sort(), ["pastScheduledStillToday", "todayByScheduled"]);
+  // A plan for a day that has passed is carried over for triage — never silently today's work.
+  assert.deepEqual(b.carried.map((t) => t.title), ["pastScheduledCarried"]);
+  assert.deepEqual(b.today.map((t) => t.title).sort(), ["spanStillRunning", "todayByScheduled"]);
   assert.deepEqual(b.upcoming.map((t) => t.title), ["upcoming"]);
-  assert.deepEqual(b.unplanned.map((t) => t.title), ["unplanned"]);
+  assert.deepEqual(b.unplanned.map((t) => t.title), ["unplanned"], "someday items are not 'needs scheduling'");
   assert.deepEqual(b.onhold.map((t) => t.title), ["onhold"]);
+  assert.deepEqual(b.someday.map((t) => t.title), ["wishlist"]);
 });
 
 test("overdue takes precedence over a future scheduled date", () => {

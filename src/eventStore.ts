@@ -69,14 +69,6 @@ export class EventStore {
     }
   }
 
-  private uniquePath(folder: string, title: string, date: string): string {
-    const safe = title.replace(/[\\/:*?"<>|#^[\]]/g, "").trim() || "Event";
-    let p = normalizePath(`${folder}/${date} ${safe}.md`);
-    let n = 2;
-    while (this.app.vault.getAbstractFileByPath(p)) p = normalizePath(`${folder}/${date} ${safe} ${n++}.md`);
-    return p;
-  }
-
   async createEvent(f: NewEventFields): Promise<TFile> {
     // Same path rule as editing, so create and edit can never disagree about where an
     // event of a given category belongs.

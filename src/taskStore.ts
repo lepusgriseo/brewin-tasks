@@ -587,7 +587,7 @@ export class TaskStore {
   }
 
   async setStatus(task: Task, status: Status): Promise<void> {
-    await this.persist({ ...task, status });
+    await this.persist(withStatus(task, status));
   }
 
   async setPriority(task: Task, priority: Priority): Promise<void> {
@@ -732,7 +732,7 @@ export class TaskStore {
     let n = 0;
     for (const task of tasks) {
       if (task.status === status) continue;
-      await this.persist({ ...task, status });
+      await this.persist(withStatus(task, status));
       n++;
     }
     return n;
@@ -817,6 +817,16 @@ export class TaskStore {
     await this.app.fileManager.renameFile(file, dest);
   }
 
+  /** File the given tasks into the Done folder. Returns how many moved. */
+  async archiveTasks(tasks: Task[]): Promise<number> {
+    let moved = 0;
+    for (const task of tasks) {
+      await this.archiveNote(task);
+      moved++;
+    }
+    return moved;
+  }
+
   /** Move all completed one-off tasks into the Done folder. Returns how many moved. */
   async archiveDone(): Promise<number> {
     let moved = 0;
@@ -829,6 +839,16 @@ export class TaskStore {
     }
     return moved;
   }
+}
+
+/**
+ * A task with a new status. Someday means undated by definition, so moving a task there clears the
+ * day and time it was planned for — otherwise it would keep a date nobody intends to keep. A due
+ * date stays: a real deadline is not something to quietly drop.
+ */
+function withStatus(task: Task, status: Status): Task {
+  if (status !== "someday") return { ...task, status };
+  return { ...task, status, scheduled: null, startTime: null, endTime: null, endDate: null };
 }
 
 function collectTags(fm: Record<string, unknown>, cache: ReturnType<App["metadataCache"]["getFileCache"]>): string[] {

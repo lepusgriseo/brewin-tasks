@@ -93,6 +93,18 @@ export interface BrewinSettings {
   /** A fresh dashboard leaf opens on Attention instead of Today when there's backlog. Only
    *  checked once per leaf open — never yanks you off a tab you're already on. */
   dashboardDefaultToAttentionWhenBehind: boolean;
+
+  // ── 1.51: phone-first review ────────────────────────────────────────────────
+  /** Draw Brewin Fitness's active plan on the calendar and in Today. */
+  trainingOnCalendar: boolean;
+  /** When each of a day's sessions starts, in order — "06:15, 20:00" is morning then evening. */
+  trainingTimes: string;
+  /** How long a session block is drawn. */
+  trainingMinutes: number;
+  /** File done tasks into the Done folder this many days after completion; 0 turns it off. */
+  autoArchiveDoneDays: number;
+  /** Desktop only: dashboard and time report in the right sidebar. Phones always use the main area. */
+  dashboardInSidebar: boolean;
 }
 
 export const DEFAULT_SETTINGS: BrewinSettings = {
@@ -139,6 +151,11 @@ export const DEFAULT_SETTINGS: BrewinSettings = {
   weekLayout: "list",
   projectsLayout: "list",
   dragHoldMs: 450,
+  trainingOnCalendar: true,
+  trainingTimes: "06:15, 20:00",
+  trainingMinutes: 45,
+  autoArchiveDoneDays: 7,
+  dashboardInSidebar: false,
   remindersEnabled: true,
   reminderLeadMinutes: 10,
   reminderAtStart: true,
@@ -321,6 +338,63 @@ export class BrewinSettingTab extends PluginSettingTab {
           this.plugin.settings.showUnallocated = v;
           await this.plugin.saveSettings();
           this.plugin.refreshViews();
+        })
+      );
+
+    containerEl.createEl("h3", { text: "Training (Brewin Fitness)" });
+    new Setting(containerEl)
+      .setName("Show the Fitness plan")
+      .setDesc("Draw each day's sessions from Brewin Fitness's active plan on the calendar and in Today. Needs Brewin Fitness enabled.")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.trainingOnCalendar).onChange(async (v) => {
+          this.plugin.settings.trainingOnCalendar = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        })
+      );
+    new Setting(containerEl)
+      .setName("Session times")
+      .setDesc("When a day's sessions start, in order: morning first. A day with more sessions than times spaces the extras an hour apart.")
+      .addText((tx) =>
+        tx.setPlaceholder("06:15, 20:00").setValue(this.plugin.settings.trainingTimes).onChange(async (v) => {
+          this.plugin.settings.trainingTimes = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        })
+      );
+    new Setting(containerEl)
+      .setName("Session length (minutes)")
+      .addText((tx) =>
+        tx.setValue(String(this.plugin.settings.trainingMinutes)).onChange(async (v) => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 10 && n <= 300) {
+            this.plugin.settings.trainingMinutes = Math.round(n);
+            await this.plugin.saveSettings();
+            this.plugin.refreshViews();
+          }
+        })
+      );
+
+    containerEl.createEl("h3", { text: "Housekeeping" });
+    new Setting(containerEl)
+      .setName("File done tasks after (days)")
+      .setDesc("Completed tasks move to the Done folder this many days after they were ticked, so the Items folder holds only live work. 0 turns it off.")
+      .addText((tx) =>
+        tx.setValue(String(this.plugin.settings.autoArchiveDoneDays)).onChange(async (v) => {
+          const n = Number(v);
+          if (Number.isFinite(n) && n >= 0 && n <= 365) {
+            this.plugin.settings.autoArchiveDoneDays = Math.round(n);
+            await this.plugin.saveSettings();
+          }
+        })
+      );
+    new Setting(containerEl)
+      .setName("Dashboard in the right sidebar (desktop)")
+      .setDesc("Phones always open the dashboard and time report in the main area.")
+      .addToggle((tg) =>
+        tg.setValue(this.plugin.settings.dashboardInSidebar).onChange(async (v) => {
+          this.plugin.settings.dashboardInSidebar = v;
+          await this.plugin.saveSettings();
         })
       );
 

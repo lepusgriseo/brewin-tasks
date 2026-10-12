@@ -1,6 +1,11 @@
 // Pure data model — no Obsidian imports, so this stays unit-testable.
 
-export type Status = "todo" | "hold" | "done";
+/**
+ * `someday` is for things that will never get a date — a wishlist, a shopping list, an idea. It is
+ * open (it can still be a parent or a dependency) but never active: no inbox nagging, no attention,
+ * no backlog count.
+ */
+export type Status = "todo" | "hold" | "someday" | "done";
 export type Priority = "low" | "normal" | "high";
 export type RecurrenceAnchor = "scheduled" | "due";
 export type OnCompletion = "keep" | "archive";
@@ -111,7 +116,11 @@ export interface EventItem {
   location: string | null;
 }
 
-export type CalendarKind = "task" | "event" | "project";
+/**
+ * `training` items come from Brewin Fitness's active plan: drawn on the calendar and in Today, but
+ * owned by the Fitness plugin — never dragged, edited or ticked here.
+ */
+export type CalendarKind = "task" | "event" | "project" | "training";
 
 /** A normalised item placed on the unified calendar. */
 export interface CalendarItem {
@@ -134,6 +143,8 @@ export interface CalendarItem {
   priority?: Priority;
   /** Event-kind items only — the free-text location, when the event has one. */
   location?: string | null;
+  /** Training items only — the Fitness routine, and the session already logged for it, if any. */
+  training?: { routine: string; sessionPath: string | null; rest: boolean };
 }
 
 export type Bucket =
@@ -145,8 +156,11 @@ export type Bucket =
 
 export interface Buckets {
   overdue: Task[];
+  /** Planned for a day that has passed and not done — waiting to be triaged, not today's plan. */
+  carried: Task[];
   today: Task[];
   upcoming: Task[];
   unplanned: Task[];
   onhold: Task[];
+  someday: Task[];
 }
