@@ -10,6 +10,9 @@ function num(v: unknown): number {
 export interface HabitsBacklog {
   dueUnmetCount: number;
   backlogDays: number;
+  /** How many habits are behind — Brewin Habits' own backlog figure (each habit with a missed
+   *  due-day in its window, once; today excluded). What the digest reports. */
+  habitsBehind: number;
 }
 
 export interface FitnessBacklog {
@@ -17,7 +20,13 @@ export interface FitnessBacklog {
 }
 
 export function habitsBacklogFromFrontmatter(fm: Record<string, unknown>): HabitsBacklog {
-  return { dueUnmetCount: num(fm.due_unmet_count), backlogDays: num(fm.backlog_days) };
+  const dueUnmetCount = num(fm.due_unmet_count);
+  const backlogDays = num(fm.backlog_days);
+  // Brewin Habits ≥1.4 writes `habits_behind`. An older one doesn't, so fall back to the sum it
+  // used to imply — that overcounted (today's not-yet-done habits, every missed day separately),
+  // which is why the newer field exists.
+  const habitsBehind = fm.habits_behind === undefined || fm.habits_behind === null ? dueUnmetCount + backlogDays : num(fm.habits_behind);
+  return { dueUnmetCount, backlogDays, habitsBehind };
 }
 
 export function fitnessBacklogFromFrontmatter(fm: Record<string, unknown>): FitnessBacklog {

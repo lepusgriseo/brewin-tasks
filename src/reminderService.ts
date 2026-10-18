@@ -154,12 +154,12 @@ export class ReminderService {
     if (digestAt != null) {
       const dueToday = agenda.anytime.length + agenda.timed.filter((r) => r.kind !== "event" && !r.done).length;
       const cross = this.plugin.settings.digestIncludeCrossPlugin;
-      const habits = cross ? this.plugin.backlog.readHabitsBacklog() : { dueUnmetCount: 0, backlogDays: 0 };
+      const habits = cross ? this.plugin.backlog.readHabitsBacklog() : { dueUnmetCount: 0, backlogDays: 0, habitsBehind: 0 };
       const fitness = cross ? this.plugin.backlog.readFitnessBacklog() : { missedSessionsCount: 0 };
       const digest = digestSource(digestAt, {
         dueCount: dueToday,
         overdueCount: agenda.overdue.length,
-        habitsBehindCount: habits.dueUnmetCount + habits.backlogDays,
+        habitsBehindCount: habits.habitsBehind,
         fitnessMissedCount: fitness.missedSessionsCount,
       });
       if (digest) out.push(digest);
