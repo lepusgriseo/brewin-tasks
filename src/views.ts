@@ -12,7 +12,7 @@ import { isRecurring, taskCoversDay, taskDayIndex, taskLastDay, taskSpanDays } f
 import { CalendarItem, CalendarKind, Task } from "./types";
 import { isActive, isCarried } from "./status";
 
-export type DashView = "today" | "week" | "inbox" | "projects" | "attention" | "review" | "all";
+export type DashView = "today" | "week" | "inbox" | "projects" | "attention" | "review" | "all" | "birthdays";
 
 export const DASH_VIEWS: { id: DashView; label: string; icon: string }[] = [
   { id: "today", label: "Today", icon: "📅" },
@@ -22,6 +22,7 @@ export const DASH_VIEWS: { id: DashView; label: string; icon: string }[] = [
   { id: "attention", label: "Attention", icon: "🔴" },
   { id: "review", label: "Review", icon: "📋" },
   { id: "all", label: "All", icon: "☰" },
+  { id: "birthdays", label: "Birthdays", icon: "🎂" },
 ];
 
 /**

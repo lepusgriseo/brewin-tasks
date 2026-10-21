@@ -121,6 +121,8 @@ export interface DigestCounts {
   habitsBehindCount: number;
   /** From Brewin Fitness's shared backlog note — missed sessions in its trailing window. */
   fitnessMissedCount: number;
+  /** Birthdays to mention — today's and the advance warnings, already worded (`birthdayDigestBits`). */
+  birthdays?: string[];
 }
 
 /**
@@ -130,8 +132,10 @@ export interface DigestCounts {
  */
 export function digestSource(atMinutes: number, counts: DigestCounts): ReminderSource | null {
   const { dueCount, overdueCount, habitsBehindCount, fitnessMissedCount } = counts;
-  if (!dueCount && !overdueCount && !habitsBehindCount && !fitnessMissedCount) return null;
-  const bits: string[] = [];
+  const birthdays = counts.birthdays ?? [];
+  if (!dueCount && !overdueCount && !habitsBehindCount && !fitnessMissedCount && !birthdays.length) return null;
+  // Birthdays first: a card to buy is the one thing here with a hard deadline you can't move.
+  const bits: string[] = [...birthdays];
   if (overdueCount) bits.push(`${overdueCount} overdue`);
   if (dueCount) bits.push(`${dueCount} due today`);
   if (habitsBehindCount) bits.push(`${habitsBehindCount} habit${habitsBehindCount === 1 ? "" : "s"} behind`);

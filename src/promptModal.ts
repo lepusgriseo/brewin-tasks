@@ -6,7 +6,16 @@ export class PromptModal extends Modal {
 
   constructor(
     app: App,
-    private opts: { title: string; body?: string; placeholder?: string; initial?: string; cta: string; onSubmit: (value: string) => void }
+    private opts: {
+      title: string;
+      body?: string;
+      placeholder?: string;
+      initial?: string;
+      cta: string;
+      /** Accept an empty answer — for clearing a field rather than naming something. */
+      allowEmpty?: boolean;
+      onSubmit: (value: string) => void;
+    }
   ) {
     super(app);
     this.value = opts.initial ?? "";
@@ -39,7 +48,7 @@ export class PromptModal extends Modal {
 
   private submit(): void {
     const value = this.value.trim();
-    if (!value) return;
+    if (!value && !this.opts.allowEmpty) return;
     this.close();
     this.opts.onSubmit(value);
   }

@@ -1,6 +1,7 @@
 import { App, TFile } from "obsidian";
 import { BrewinSettings } from "./settings";
 import { coerceISO } from "./dates";
+import { stepText } from "./projects";
 
 /** A checkbox task surfaced from a #project note, with the info needed to write back. */
 export interface ProjectTask {
@@ -21,19 +22,14 @@ function extractField(text: string, field: string): string | null {
   return m ? coerceISO(m[1].trim()) : null;
 }
 
-function cleanText(text: string): string {
-  return text
-    .replace(/\[(?:scheduled|due)::\s*[^\]]*\]/g, "")
-    .replace(/#next\b/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
 export class ProjectTaskSource {
   constructor(private app: App, private settings: BrewinSettings) {}
 
-  private isProjectNote(file: TFile): boolean {
-    if (!file.path.startsWith(this.settings.projectsFolder + "/")) return false;
+  isProjectNote(file: TFile): boolean {
+    const folder = this.settings.projectsFolder;
+    if (!file.path.startsWith(folder + "/")) return false;
+    // The folder's own hub note (03_Projects/03_Projects.md) lists projects; it isn't one.
+    if (file.path === `${folder}/${folder.split("/").pop()}.md`) return false;
     const cache = this.app.metadataCache.getFileCache(file);
     const fm = cache?.frontmatter as Record<string, unknown> | undefined;
     const fmTags = fm?.tags;
@@ -45,6 +41,24 @@ export class ProjectTaskSource {
   private projectStatus(file: TFile): string {
     const fm = this.app.metadataCache.getFileCache(file)?.frontmatter as Record<string, unknown> | undefined;
     return String(fm?.status ?? "").toLowerCase();
+  }
+
+  /**
+   * The project notes themselves, by name — including a project with nothing open, which still
+   * belongs in a list of projects. Synchronous: it only reads the metadata cache.
+   */
+  listProjects(activeOnly = false): { path: string; name: string }[] {
+    return this.listProjectFiles()
+      .filter((file) => !activeOnly || this.projectStatus(file) === "active")
+      .map((file) => ({ path: file.path, name: file.basename }));
+  }
+
+  /** The project notes, by name. */
+  listProjectFiles(): TFile[] {
+    return this.app.vault
+      .getMarkdownFiles()
+      .filter((file) => this.isProjectNote(file))
+      .sort((a, b) => a.basename.localeCompare(b.basename));
   }
 
   /** @param activeOnly when true, only tasks from projects with `status: active` are returned. */
@@ -64,7 +78,7 @@ export class ProjectTaskSource {
           projectName: file.basename,
           line: i,
           raw,
-          text: cleanText(body),
+          text: stepText(body),
           scheduled: extractField(body, "scheduled"),
           due: extractField(body, "due"),
           isNext: /#next\b/.test(body),

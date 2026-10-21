@@ -70,6 +70,11 @@ export interface Task {
   dependsOn: string[];
   /** Resolved vault paths of `dependsOn` (filled in by the store; unresolvable links dropped). */
   dependsOnPaths: string[];
+  /** Raw wikilink to the project note this task belongs to, e.g. `[[Smart home]]`, or null. A
+   *  project's own checkbox lines live in its note; this is how a task NOTE joins one. */
+  project: string | null;
+  /** The project note's resolved vault path (filled in by the store; null when unset/dangling). */
+  projectPath: string | null;
   /**
    * ISO "YYYY-MM" this task is dedicated to, independent of `scheduled`/`due` — a task can
    * belong to a month with no particular day yet ("4 hours of strength training this month"),
@@ -118,9 +123,10 @@ export interface EventItem {
 
 /**
  * `training` items come from Brewin Fitness's active plan: drawn on the calendar and in Today, but
- * owned by the Fitness plugin — never dragged, edited or ticked here.
+ * owned by the Fitness plugin — never dragged, edited or ticked here. `birthday` items come from the
+ * people notes' `DOB::` lines, and likewise only open their note.
  */
-export type CalendarKind = "task" | "event" | "project" | "training";
+export type CalendarKind = "task" | "event" | "project" | "training" | "birthday";
 
 /** A normalised item placed on the unified calendar. */
 export interface CalendarItem {

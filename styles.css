@@ -1124,25 +1124,16 @@
 }
 .brewin-review-unsch-row:hover { background: var(--background-modifier-hover); }
 
-/* ── Mobile: clear the fixed bottom toolbar ──────────────────────────────────
-   Obsidian's mobile app keeps a bottom menu bar on screen that overlays custom
-   views, hiding the last rows of content behind it. Reserve space at the foot of
-   each view so nothing sits under the bar.
+/* ── Phones: clear Obsidian's navigation bar ───────────────────────────────────
+   The floating bar is fixed over the bottom of the view, so each view keeps room for it — measured
+   from the bar in the "Room for Obsidian's phone navigation bar" block at the end of this file.
 
-   - `.brewin-dashboard` / `.brewin-time` are themselves the scroll container, so
-     the padding lands at the end of their scroll range.
-   - `.brewin-calendar` is a flex column whose children scroll (month grid, time
-     grid, this-month panel); padding on the shell shrinks the space handed to
-     those children, so they end above the bar.
-
-   `.is-mobile` is set by Obsidian on the phone and tablet apps only — desktop
-   never matches, so this rule is inert there. Adjust the 48px if your device's
-   bar is a different height. */
-.is-mobile .brewin-calendar,
-.is-mobile .brewin-dashboard,
-.is-mobile .brewin-time {
-  padding-bottom: calc(var(--safe-area-inset-bottom, 0px) + 48px);
-}
+   - `.brewin-time` is itself the scroll container, so the room lands at the end of its scroll range.
+   - `.brewin-calendar` is a flex column whose children scroll (month grid, time grid, this-month
+     panel); room on the shell shrinks the space handed to those children, so they end above the bar.
+   - The dashboard's two columns carry their own (see 1.52 below). */
+body.is-phone .brewin-calendar { padding-bottom: calc(var(--brewin-planner-navbar-room) + 8px); }
+body.is-phone .brewin-time { padding-bottom: calc(var(--brewin-planner-navbar-room) + 32px); }
 
 /* ── 1.51 — the phone-first review ─────────────────────────────────────────────
    Built against the views rendered at 390px with Obsidian's own app.css. */
@@ -1294,3 +1285,396 @@ body.is-phone .brewin-dashboard .brewin-toolbar.has-groupby .brewin-context-filt
 body.is-phone .brewin-dashboard .brewin-toolbar.has-groupby .brewin-groupby { flex: 1 1 0; max-width: none; }
 .brewin-chip-more { opacity: 0.75; }
 body.is-phone .brewin-dashboard .brewin-toolbar .brewin-search { max-width: none; }
+
+/* ── 1.52 — the dashboard menu ──────────────────────────────────────────────────
+   The dashboard is two columns that scroll on their own: the menu, and the task list. Below 620px,
+   and always on a phone, the menu is a drawer over the list instead, opened from ☰. */
+.workspace-leaf-content .view-content.brewin-dashboard.has-menu {
+  display: flex;
+  padding: 0;
+  overflow: hidden;
+  position: relative;
+}
+.brewin-dashboard.has-menu .brewin-dash-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 0 14px 32px;
+}
+
+.brewin-menu {
+  flex: 0 0 236px;
+  width: 236px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--background-secondary);
+  border-right: 1px solid var(--background-modifier-border);
+}
+.brewin-menu-head { display: flex; flex-direction: column; gap: 8px; padding: 10px 10px 6px; }
+.brewin-menu-top { display: flex; align-items: center; justify-content: space-between; }
+.brewin-menu-heading { font-weight: 600; font-size: var(--font-ui-medium); padding-left: 4px; }
+.brewin-menu .brewin-menu-new { display: flex; align-items: center; justify-content: center; gap: 6px; width: 100%; }
+.brewin-menu-new .brewin-menu-icon { display: flex; flex: 0 0 auto; }
+.brewin-menu-new svg { width: 16px; height: 16px; }
+.brewin-menu-head .brewin-search { width: 100%; max-width: none; flex: none; }
+.brewin-menu-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 4px 6px 12px; }
+
+.brewin-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.brewin-menu-item:hover { background: var(--background-modifier-hover); color: var(--text-normal); }
+.brewin-menu-item:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--background-modifier-border-focus); }
+.brewin-menu-item.is-active { background: var(--background-modifier-active-hover); color: var(--text-normal); font-weight: 600; }
+.brewin-menu-item.is-quiet { color: var(--text-faint); }
+.brewin-menu-item.is-hidden,
+.brewin-menu-section.is-hidden > .brewin-menu-section-head,
+.brewin-menu-progress.is-hidden { opacity: 0.45; }
+.brewin-menu-icon { flex: 0 0 20px; text-align: center; }
+.brewin-menu-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brewin-menu-count { flex: 0 0 auto; color: var(--text-faint); font-size: var(--font-ui-smaller); font-weight: 400; font-variant-numeric: tabular-nums; }
+.brewin-menu-count.is-alert { padding: 0 6px; border-radius: 9px; background: var(--color-red); color: #fff; font-weight: 600; }
+.brewin-menu-empty { padding: 2px 8px 4px 36px; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+
+.brewin-menu-section { margin-top: 10px; }
+.brewin-menu-section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  cursor: pointer;
+  user-select: none;
+}
+.brewin-menu-section-head:hover { color: var(--text-muted); }
+.brewin-menu-section-label { flex: 1 1 auto; }
+.brewin-menu-chevron { flex: 0 0 12px; }
+
+.brewin-menu-progress { margin: 2px 4px 10px; padding: 8px 10px; border-radius: 8px; background: var(--background-primary); }
+.brewin-menu-progress-line { display: flex; align-items: baseline; gap: 6px; font-size: var(--font-ui-small); }
+.brewin-menu-progress-label { font-weight: 600; }
+.brewin-menu-progress-figure { margin-left: auto; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.brewin-menu-progress-short { display: none; }
+.brewin-menu-progress-bar { height: 6px; margin-top: 6px; border-radius: 3px; background: var(--background-modifier-border); overflow: hidden; }
+.brewin-menu-progress-fill { height: 100%; border-radius: 3px; background: var(--interactive-accent); transition: width 0.3s ease; }
+.brewin-menu-backlog { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+
+.brewin-menu-edit { display: flex; gap: 2px; margin-left: auto; }
+.brewin-menu-edit .clickable-icon,
+.brewin-menu .brewin-menu-eye { padding: 3px; }
+.brewin-menu-eye.is-in-header { margin-left: auto; }
+.brewin-menu.is-editing .brewin-menu-item { cursor: default; }
+.brewin-menu-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.brewin-menu .brewin-menu-edit-btn { font-size: var(--font-ui-smaller); }
+.brewin-menu-fold { margin-left: auto; }
+
+/* Dropping a task on the menu: the extra targets appear, and every target is outlined. */
+.brewin-menu-drops { display: none; }
+.brewin-is-dragging .brewin-menu-drops {
+  display: block;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px dashed var(--background-modifier-border);
+}
+.brewin-is-dragging .brewin-menu-item[data-drop-menu] { outline: 1px dashed var(--background-modifier-border); outline-offset: -1px; }
+.brewin-is-dragging .brewin-menu-item.brewin-drop-active {
+  outline: 2px solid var(--interactive-accent);
+  background: color-mix(in srgb, var(--interactive-accent) 18%, transparent);
+  color: var(--text-normal);
+}
+
+/* Folded to a rail of icons — opened out again mid-drag, so projects and contexts can be dropped on. */
+.brewin-dashboard.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu { flex-basis: 52px; width: 52px; }
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-label,
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-section,
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-edit-btn,
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-progress-label,
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-progress-figure,
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-backlog { display: none; }
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-progress-short { display: inline; margin: 0 auto; font-size: var(--font-ui-smaller); }
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-progress { margin: 2px 0 8px; padding: 6px 4px; }
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-head { padding: 10px 6px 6px; }
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-item { position: relative; justify-content: center; padding: 4px 0; }
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-count { position: absolute; top: 0; right: 0; font-size: 10px; line-height: 14px; }
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-foot { justify-content: center; padding: 8px 0; }
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-fold { margin-left: 0; }
+
+/* The header above the list: where you are, and this list's controls. */
+.brewin-dash-header { position: sticky; top: 0; z-index: 5; padding-top: 8px; background: var(--background-primary); }
+.brewin-dash-titlebar { display: flex; align-items: center; gap: 6px; min-height: 36px; padding-bottom: 6px; }
+.brewin-dash-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-ui-medium);
+  font-weight: 600;
+}
+.brewin-dash-actions { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; margin-left: auto; }
+.brewin-dash-header .brewin-toolbar { position: static; flex-wrap: nowrap; padding: 0 0 8px; }
+.brewin-dash-header .brewin-toolbar .brewin-search { flex: 1 1 auto; max-width: 420px; }
+.brewin-dash-header .brewin-filter-chip {
+  flex: 0 0 auto;
+  padding: 2px 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--interactive-accent) 16%, transparent);
+  color: var(--text-accent);
+  font-size: var(--font-ui-smaller);
+  box-shadow: none;
+}
+.brewin-dash-header .brewin-menu-btn { position: relative; }
+.brewin-menu-btn-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; background: var(--color-red); }
+.brewin-meta-project { color: var(--text-accent); cursor: pointer; }
+
+/* Narrow: the menu slides in over the list. */
+.brewin-dashboard.is-drawer .brewin-menu {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  width: min(300px, 86%);
+  border-right: none;
+  box-shadow: 4px 0 18px rgba(0, 0, 0, 0.25);
+  transform: translateX(-104%);
+  transition: transform 0.22s ease-out;
+}
+.brewin-dashboard.is-drawer.is-menu-open .brewin-menu { transform: none; }
+.brewin-menu-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 19;
+  background: rgba(0, 0, 0, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.is-menu-open .brewin-menu-scrim { opacity: 1; pointer-events: auto; }
+@media (prefers-reduced-motion: reduce) {
+  .brewin-dashboard.is-drawer .brewin-menu,
+  .brewin-menu-scrim { transition: none; }
+}
+
+/* The new-task button floats over the list's corner; the list itself doesn't scroll the view now. */
+.brewin-dashboard.has-menu .brewin-fab {
+  position: absolute;
+  right: 16px;
+  bottom: calc(var(--brewin-planner-navbar-room, 0px) + 16px);
+  margin: 0;
+}
+
+/* Room for Obsidian's phone navigation bar. The floating bar (and the one in auto full screen) is
+   fixed over the bottom of the view rather than below it; Obsidian makes room for it only in notes
+   and Bases. Measured from the bar itself: its float gap plus its height, and nothing while the
+   keyboard is up, when Obsidian moves the bar off screen. A docked bar sits below the view. */
+body.is-phone { --brewin-planner-navbar-room: 0px; }
+body.is-phone.auto-full-screen {
+  --brewin-planner-navbar-room: max(0px, calc(var(--navbar-height, 0px) - var(--keyboard-height, 0px)));
+}
+body.is-phone.is-floating-nav {
+  --brewin-planner-navbar-room: max(
+    0px,
+    calc(var(--navbar-bottom-offset, 0px) + var(--navbar-height, 0px) - var(--keyboard-height, 0px))
+  );
+}
+
+/* Phones: thumb-sized entries, and the list's foot clear of the nav bar and the ＋ button. */
+body.is-phone .brewin-dashboard.has-menu .brewin-dash-main { padding: 0 10px calc(var(--brewin-planner-navbar-room) + 88px); }
+body.is-phone .brewin-menu-item { min-height: 44px; font-size: var(--font-ui-medium); }
+body.is-phone .brewin-menu .brewin-menu-new { min-height: 44px; }
+body.is-phone .brewin-menu-section-head { min-height: 36px; }
+body.is-phone .brewin-dashboard.is-drawer .brewin-menu-foot { padding-bottom: calc(var(--brewin-planner-navbar-room) + 10px); }
+body.is-phone .brewin-dash-header .brewin-menu-btn { width: 40px; height: 40px; }
+/* Mid-drag the menu is all drop targets: today's progress isn't one, so it steps aside. */
+.brewin-is-dragging .brewin-menu-progress { display: none; }
+.brewin-untitled { color: var(--text-faint); font-style: italic; }
+
+/* ── 1.53 — birthdays ───────────────────────────────────────────────────────────
+   From the people notes' DOB:: lines: a pink chip on the calendar, and the Birthdays page. */
+.brewin-chip-item.kind-birthday {
+  border-left: 3px solid var(--color-pink);
+  background: color-mix(in srgb, var(--color-pink) 18%, var(--background-modifier-hover));
+  cursor: pointer;
+}
+.brewin-chip-item.kind-birthday .g { opacity: 1; margin-right: 1px; }
+
+.brewin-bday-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+.brewin-bday-row:hover { background: var(--background-modifier-hover); }
+.brewin-bday-row.is-today { background: color-mix(in srgb, var(--color-pink) 16%, transparent); }
+.brewin-bday-date {
+  flex: 0 0 6.5em;
+  white-space: nowrap;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+}
+.brewin-bday-row.is-today .brewin-bday-date { color: var(--text-normal); font-weight: 600; }
+.brewin-bday-main { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
+.brewin-bday-meta { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.brewin-bday-row .brewin-icon-btn { opacity: 0.55; }
+.brewin-bday-row:hover .brewin-icon-btn { opacity: 1; }
+body.is-phone .brewin-bday-row { min-height: 44px; }
+body.is-phone .brewin-bday-row .brewin-icon-btn { opacity: 1; }
+
+/* ── 1.54 — projects ────────────────────────────────────────────────────────────
+   Project HQ's own fields in the Planner: each project's next action and deadline, its status on
+   its own page, the 🚩 for a project with nothing to do next, and the projects step in the Review.
+   Status is always spelt out beside its glyph; colour only repeats it. */
+
+/* Menu: a waiting project says what it waits on, in a quieter second line. */
+.brewin-menu-text { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; }
+.brewin-menu-text .brewin-menu-label { flex: 0 0 auto; }
+.brewin-menu-sub { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: var(--font-ui-smaller); }
+.is-menu-collapsed:not(.brewin-is-dragging) .brewin-menu-text { display: none; }
+
+/* Under a project's name: the next action, then the deadline. */
+.brewin-proj-brief {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 2px 0 6px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--background-secondary);
+  font-size: var(--font-ui-small);
+}
+.brewin-proj-brief.is-stalled { border-left-color: var(--text-error); }
+/* The text keeps a readable width: in a narrow board column the ✓ Done button drops below it. */
+.brewin-proj-next { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
+.brewin-proj-next-label {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.brewin-proj-next-text { flex: 1 1 14em; min-width: 0; overflow-wrap: anywhere; }
+.brewin-proj-next-text[role="button"] { cursor: pointer; }
+.brewin-proj-next .brewin-chip-mini { flex: 0 0 auto; align-self: center; }
+.brewin-proj-next.is-unset .brewin-proj-next-text { color: var(--text-muted); }
+.brewin-proj-next.is-stalled .brewin-proj-next-text { color: var(--text-error); font-weight: 600; }
+.brewin-proj-due { align-self: flex-start; color: var(--text-muted); font-size: var(--font-ui-smaller); cursor: pointer; }
+.brewin-proj-due.is-overdue { color: var(--text-error); font-weight: 600; }
+.brewin-board-body .brewin-proj-brief { margin: 0 0 6px; }
+
+/* A project's own page: status and deadline chips, what it waits on, then the next action. */
+.brewin-proj-head { margin: 4px 0 14px; }
+.brewin-proj-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.brewin-proj-chips button.brewin-proj-status {
+  height: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 14px;
+  background: var(--background-secondary);
+  box-shadow: none;
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  font-weight: 500;
+  cursor: pointer;
+}
+.brewin-proj-chips button.brewin-proj-status:hover { background: var(--background-modifier-hover); }
+.brewin-proj-chips button.brewin-proj-status.is-active { border-color: color-mix(in srgb, var(--color-green) 60%, transparent); }
+.brewin-proj-chips button.brewin-proj-status.is-waiting { border-color: color-mix(in srgb, var(--color-yellow) 70%, transparent); }
+.brewin-proj-chips button.brewin-proj-status.is-someday { color: var(--text-muted); }
+.brewin-proj-chips button.brewin-proj-deadline.is-overdue { border-color: var(--text-error); color: var(--text-error); font-weight: 600; }
+.brewin-proj-chips button.brewin-proj-deadline.is-quiet { border-style: dashed; color: var(--text-faint); }
+.brewin-proj-waiting { margin-bottom: 8px; color: var(--text-muted); font-size: var(--font-ui-small); cursor: pointer; }
+.brewin-proj-head .brewin-proj-brief { margin: 0; }
+
+/* Waiting and Someday, under the active projects: a name, and what it waits on or what's next. */
+.brewin-proj-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 8px;
+  min-height: 32px;
+  padding: 4px 6px;
+  border-radius: 6px;
+}
+.brewin-proj-row:hover { background: var(--background-modifier-hover); }
+.brewin-proj-row .brewin-task-link { cursor: pointer; }
+.brewin-proj-row-meta { min-width: 0; overflow-wrap: anywhere; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+
+/* Review: the projects step. */
+.brewin-review-projects .brewin-review-row { align-items: flex-start; }
+.brewin-review-projects .brewin-transfer-box { margin-top: 3px; }
+.brewin-transfer-blank { visibility: hidden; }
+.brewin-review-glyph { flex: 0 0 1.2em; color: var(--text-muted); text-align: center; }
+.brewin-review-proj-main { display: flex; flex-direction: column; gap: 1px; cursor: default; }
+.brewin-review-proj-name { align-self: flex-start; font-weight: 600; cursor: pointer; }
+.brewin-review-proj-next { overflow-wrap: anywhere; }
+.brewin-review-proj-next.is-unset { color: var(--text-muted); }
+.brewin-review-proj-due { color: var(--text-error); font-size: 0.9em; }
+.brewin-review-projects .brewin-chip-mini { flex: 0 0 auto; }
+
+/* The "next action done" dialog. */
+.brewin-next-modal .brewin-capture-hint { text-align: left; }
+.brewin-next-modal h4 {
+  margin: 16px 0 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.brewin-next-finished {
+  margin-top: 10px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-green) 14%, var(--background-secondary));
+}
+.brewin-next-tick { display: flex; align-items: flex-start; gap: 8px; margin-top: 8px; font-size: var(--font-ui-small); cursor: pointer; }
+.brewin-next-tick input { flex: 0 0 auto; margin-top: 3px; }
+.brewin-next-steps { display: flex; flex-direction: column; gap: 4px; max-height: 45vh; margin-bottom: 10px; overflow-y: auto; }
+.brewin-next-modal button.brewin-next-step {
+  display: block;
+  width: 100%;
+  height: auto;
+  min-height: 36px;
+  padding: 6px 10px;
+  font-weight: 400;
+  line-height: 1.35;
+  text-align: left;
+  white-space: normal;
+}
+.brewin-next-step-due { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.brewin-next-modal button.brewin-next-more {
+  align-self: flex-start;
+  height: auto;
+  padding: 4px 10px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-accent);
+  font-size: var(--font-ui-smaller);
+}
+body.is-phone .brewin-proj-row { min-height: 44px; }
+body.is-phone .brewin-next-modal button.brewin-next-step { min-height: 44px; }

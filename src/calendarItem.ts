@@ -219,7 +219,7 @@ export function projectTasksToItems(tasks: ProjectTaskLike[], fromISO: string, t
  * people first, then your own work. Project tasks sit just after tasks, since that's what
  * they are — surfaced from a project note rather than standing on their own.
  */
-const KIND_RANK: Record<CalendarKind, number> = { event: 0, training: 0, task: 1, project: 2 };
+const KIND_RANK: Record<CalendarKind, number> = { birthday: 0, event: 0, training: 0, task: 1, project: 2 };
 
 /**
  * Sort items within a day: outstanding work first and anything already completed last

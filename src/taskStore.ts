@@ -36,6 +36,8 @@ export interface NewTaskFields {
   remindStart?: boolean | null;
   /** Wikilinks to tasks this one depends on. Blocks completion only. */
   dependsOn?: string[];
+  /** Wikilink to the project note this task belongs to. */
+  project?: string | null;
   /** ISO "YYYY-MM" this task is dedicated to — see `Task.month`. */
   month?: string | null;
   /** ISO week label ("2026-W37") this task is dedicated to — see `Task.week`. */
@@ -71,6 +73,7 @@ export class TaskStore {
       const task = taskFromFrontmatter(fm, file.path, file.basename);
       task.parentPath = this.resolveParentPath(task.parent, file.path);
       task.dependsOnPaths = this.resolveLinkPaths(task.dependsOn, file.path);
+      task.projectPath = this.resolveParentPath(task.project, file.path);
       out.push(task);
     }
     return out;
@@ -153,6 +156,7 @@ export class TaskStore {
     if (fields.month) fm.push(`month: ${fields.month}`);
     if (fields.week) fm.push(`week: ${fields.week}`);
     if (fields.parent) fm.push(`parent: "${fields.parent}"`);
+    if (fields.project) fm.push(`project: "${fields.project}"`);
     if (fields.dependsOn?.length) {
       fm.push("depends_on:");
       for (const link of fields.dependsOn) fm.push(`  - "${link}"`);
@@ -228,6 +232,38 @@ export class TaskStore {
       fm.modified = todayISO();
     });
     return true;
+  }
+
+  /**
+   * Put a task note in a project (or take it out, with `null`). The link is by basename, the same
+   * way `parent:` links are written, so renaming the project note keeps it attached.
+   */
+  async setProject(task: Task, projectPath: string | null): Promise<void> {
+    const file = this.fileFor(task);
+    if (!file) return;
+    const link = projectPath ? toWikilink(projectPath.split("/").pop()?.replace(/\.md$/, "") ?? projectPath) : null;
+    await this.app.fileManager.processFrontMatter(file, (fm) => {
+      if (link) fm.project = link;
+      else delete fm.project;
+      fm.modified = todayISO();
+    });
+  }
+
+  /**
+   * Schedule a task for a day and make it active again in the same write — a Someday or on-hold
+   * task dropped on Today is wanted today. One write, because a second one built from the same
+   * task object would put the old status straight back (the metadata cache lags a write).
+   */
+  async moveToDay(task: Task, iso: string): Promise<void> {
+    const endDate =
+      task.endDate && task.scheduled ? shiftISO(task.endDate, dayDelta(task.scheduled, iso)) : task.endDate;
+    await this.persist({ ...task, status: "todo", scheduled: iso, endDate });
+  }
+
+  /** Undated and active again: what "back to the inbox" means. A due date is kept — a deadline
+   *  is a fact about the task, not a plan for it. */
+  async backToInbox(task: Task): Promise<void> {
+    await this.persist({ ...task, status: "todo", scheduled: null, startTime: null, endTime: null, endDate: null });
   }
 
   getByPath(path: string): Task | null {
@@ -395,7 +431,7 @@ export class TaskStore {
     task: Task,
     // NOTE: no `title` — a task is renamed by renaming its file (see `rename`).
     f: Partial<
-      Pick<Task, "scheduled" | "startTime" | "endTime" | "due" | "priority" | "status" | "contexts" | "recurrence" | "recurrenceAnchor" | "parent" | "times" | "endDate" | "estimate" | "remind" | "remindStart" | "dependsOn" | "month" | "week">
+      Pick<Task, "scheduled" | "startTime" | "endTime" | "due" | "priority" | "status" | "contexts" | "recurrence" | "recurrenceAnchor" | "parent" | "times" | "endDate" | "estimate" | "remind" | "remindStart" | "dependsOn" | "month" | "week" | "project">
     >
     /** @returns the task's path, which changes if the edit moved the note. */
   ): Promise<string> {
@@ -437,6 +473,10 @@ export class TaskStore {
       if (f.parent !== undefined) {
         if (f.parent) fm.parent = f.parent;
         else delete fm.parent;
+      }
+      if (f.project !== undefined) {
+        if (f.project) fm.project = f.project;
+        else delete fm.project;
       }
       if (f.dependsOn !== undefined) {
         if (f.dependsOn.length) fm.depends_on = f.dependsOn;
@@ -548,6 +588,7 @@ export class TaskStore {
         priority: f.priority,
         contexts: f.contexts,
         parent: f.parent ?? null,
+        project: f.project ?? null,
         recurrence: f.recurrence ?? original.recurrence,
         recurrenceAnchor: f.recurrenceAnchor,
         endDate: f.endDate ?? null,

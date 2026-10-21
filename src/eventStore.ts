@@ -91,7 +91,7 @@ export class EventStore {
     if (f.remindStart != null) lines.push(`remind_start: ${f.remindStart}`);
     if (f.trip) lines.push(`trip: "${f.trip}"`);
     if (f.location) lines.push(`location: "${f.location.replace(/"/g, '\\"')}"`);
-    // Left empty for the Properties panel: link the people who were there, e.g. [[Zoe Brewin]].
+    // Left empty for the Properties panel: link the people who were there, e.g. [[Ada Fernsby]].
     lines.push("with: ", "completed: null", `modified: ${todayISO()}`, "---", "", `# ${f.title}`, "");
     if (f.body?.trim()) lines.push(f.body.trim(), "");
     return this.app.vault.create(path, lines.join("\n"));

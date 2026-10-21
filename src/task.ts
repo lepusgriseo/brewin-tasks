@@ -100,6 +100,8 @@ export function taskFromFrontmatter(fm: Record<string, unknown>, path: string, b
     parentPath: null, // resolved by the store (needs the metadata cache)
     dependsOn: asStringList(fm.depends_on),
     dependsOnPaths: [], // resolved by the store (needs the metadata cache)
+    project: fm.project ? String(fm.project).trim() || null : null,
+    projectPath: null, // resolved by the store (needs the metadata cache)
     month: fm.month ? String(fm.month).trim() || null : null,
     week: fm.week ? String(fm.week).trim() || null : null,
   };

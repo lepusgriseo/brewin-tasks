@@ -2,6 +2,7 @@ import { Notice, Platform } from "obsidian";
 import { minutesOfDay, nowMinutes, todayISO } from "./dates";
 import { eventsToItems } from "./calendarItem";
 import { todayAgenda } from "./views";
+import { birthdayDigestBits } from "./birthdays";
 import {
   digestSource,
   dueReminders,
@@ -15,6 +16,8 @@ import type BrewinTasksPlugin from "./main";
 
 const TICK_MS = 30_000;
 const SNOOZE_MINUTES = 10;
+/** When birthdays are announced if the morning digest is turned off: 09:00. */
+const BIRTHDAY_FALLBACK_MINUTES = 9 * 60;
 
 /**
  * Fires reminders while Obsidian is open.
@@ -151,6 +154,21 @@ export class ReminderService {
     // Morning digest of what's waiting, as its own pseudo-source. Folds in the sibling plugins'
     // backlog too, unless that's been turned off.
     const digestAt = minutesOfDay(this.plugin.settings.reminderDigestTime);
+    const s = this.plugin.settings;
+    const birthdays = s.birthdayReminders ? birthdayDigestBits(this.plugin.birthdays.getPeople(), today, s.birthdayRemindDays) : [];
+    if (digestAt == null && birthdays.length) {
+      // No morning digest to fold them into, so birthdays get a notification of their own.
+      out.push({
+        key: "birthdays",
+        title: "Birthdays",
+        subtitle: birthdays.join(" · "),
+        path: "",
+        atMinutes: BIRTHDAY_FALLBACK_MINUTES,
+        leadOverride: 0,
+        atStartOverride: true,
+        suppressed: false,
+      });
+    }
     if (digestAt != null) {
       const dueToday = agenda.anytime.length + agenda.timed.filter((r) => r.kind !== "event" && !r.done).length;
       const cross = this.plugin.settings.digestIncludeCrossPlugin;
@@ -161,6 +179,7 @@ export class ReminderService {
         overdueCount: agenda.overdue.length,
         habitsBehindCount: habits.habitsBehind,
         fitnessMissedCount: fitness.missedSessionsCount,
+        birthdays,
       });
       if (digest) out.push(digest);
     }

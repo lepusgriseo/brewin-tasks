@@ -1,5 +1,6 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type { CalView } from "./calendar";
+import type { SavedFilter } from "./dashMenu";
 import type BrewinTasksPlugin from "./main";
 
 export interface Category {
@@ -105,6 +106,28 @@ export interface BrewinSettings {
   autoArchiveDoneDays: number;
   /** Desktop only: dashboard and time report in the right sidebar. Phones always use the main area. */
   dashboardInSidebar: boolean;
+
+  // ── 1.52: the dashboard's menu pane ─────────────────────────────────────────
+  /** Wide screens: the menu folded to a rail of icons. A phone always uses the drawer instead. */
+  menuCollapsed: boolean;
+  /** The views in the menu, top to bottom. Empty means the default order. */
+  menuOrder: string[];
+  /** Menu entries the user has hidden, by key (`view:all`, `section:links`, `project:<path>`…). */
+  menuHidden: string[];
+  /** Menu sections folded shut, by id. */
+  menuFolded: string[];
+  /** Named dashboard states, in the order they were saved. */
+  savedFilters: SavedFilter[];
+
+  // ── 1.53: birthdays, from the people notes ─────────────────────────────────
+  /** Where the people notes are; each one's `DOB::` line is its birthday. */
+  peopleFolder: string;
+  /** Draw birthdays on the calendar. */
+  birthdaysOnCalendar: boolean;
+  /** Name birthdays in the morning digest. */
+  birthdayReminders: boolean;
+  /** Days of warning before a birthday, as well as on the day itself; 0 is on the day only. */
+  birthdayRemindDays: number;
 }
 
 export const DEFAULT_SETTINGS: BrewinSettings = {
@@ -156,6 +179,15 @@ export const DEFAULT_SETTINGS: BrewinSettings = {
   trainingMinutes: 45,
   autoArchiveDoneDays: 7,
   dashboardInSidebar: false,
+  menuCollapsed: false,
+  menuOrder: [],
+  menuHidden: [],
+  menuFolded: [],
+  savedFilters: [],
+  peopleFolder: "04_Areas/People",
+  birthdaysOnCalendar: true,
+  birthdayReminders: true,
+  birthdayRemindDays: 7,
   remindersEnabled: true,
   reminderLeadMinutes: 10,
   reminderAtStart: true,
@@ -338,6 +370,73 @@ export class BrewinSettingTab extends PluginSettingTab {
           this.plugin.settings.showUnallocated = v;
           await this.plugin.saveSettings();
           this.plugin.refreshViews();
+        })
+      );
+
+    containerEl.createEl("h3", { text: "Dashboard menu" });
+    new Setting(containerEl)
+      .setName("Fold the menu to icons")
+      .setDesc("Wide screens only — the « at the foot of the menu does the same. A phone always opens it from ☰.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.menuCollapsed).onChange(async (v) => {
+          this.plugin.settings.menuCollapsed = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        })
+      );
+    new Setting(containerEl)
+      .setName("Reset the menu")
+      .setDesc("Put the views back in their default order and show every hidden entry again. Saved filters are kept.")
+      .addButton((b) =>
+        b.setButtonText("Reset").onClick(async () => {
+          this.plugin.settings.menuOrder = [];
+          this.plugin.settings.menuHidden = [];
+          this.plugin.settings.menuFolded = [];
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        })
+      );
+
+    containerEl.createEl("h3", { text: "Birthdays" });
+    new Setting(containerEl)
+      .setName("People folder")
+      .setDesc("Each note here is a person; the date in its DOB:: line is their birthday. Add Birthday:: hidden to a note to leave someone out.")
+      .addText((t) =>
+        t.setValue(this.plugin.settings.peopleFolder).onChange(async (v) => {
+          this.plugin.settings.peopleFolder = v.trim().replace(/\/$/, "");
+          await this.plugin.saveSettings();
+          await this.plugin.birthdays.loadAll();
+          this.plugin.refreshViews();
+        })
+      );
+    new Setting(containerEl)
+      .setName("Show birthdays on the calendar")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.birthdaysOnCalendar).onChange(async (v) => {
+          this.plugin.settings.birthdaysOnCalendar = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        })
+      );
+    new Setting(containerEl)
+      .setName("Birthdays in the morning digest")
+      .setDesc("On the day, and a warning ahead of it. With the digest off, they get a notification of their own at 09:00.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.birthdayReminders).onChange(async (v) => {
+          this.plugin.settings.birthdayReminders = v;
+          this.plugin.reminders?.markStale();
+          await this.plugin.saveSettings();
+        })
+      );
+    new Setting(containerEl)
+      .setName("Days of warning")
+      .setDesc("How many days before a birthday to mention it, to get a card or present in time. 0 is on the day only.")
+      .addText((t) =>
+        t.setValue(String(this.plugin.settings.birthdayRemindDays)).onChange(async (v) => {
+          const n = Number(v);
+          this.plugin.settings.birthdayRemindDays = Number.isFinite(n) && n >= 0 && n <= 60 ? Math.round(n) : 7;
+          this.plugin.reminders?.markStale();
+          await this.plugin.saveSettings();
         })
       );
 

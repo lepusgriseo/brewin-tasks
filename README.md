@@ -14,6 +14,24 @@ Its plugin id is `brewin-tasks`; it is called Brewin Planner because it grew pas
   question asked properly when you edit one.
 - **A calendar** in day, week and month layouts, showing tasks, events and project tasks, with drag
   to reschedule and a configurable slot size.
+- **A dashboard with a menu.** Today, Week, Inbox, Projects, Attention, Review and All, each with
+  what is left in it, sit in a menu down the left beside the list. The menu also holds today's
+  progress (and what Brewin Habits and Fitness say is behind), your active projects, your contexts,
+  saved filters, and the calendar and time report. Reorder or hide anything in it. On a phone, or in
+  a narrow pane, it becomes a drawer behind ☰. Drag a task onto Today, Tomorrow, Next week, Someday,
+  Inbox, a project or a context to send it there.
+- **Projects, the way Project HQ runs them.** Each project shows its next action (`next:`) and
+  deadline (`due:`) under its name. **✓ Done** writes the finished action into the note's log, offers
+  to tick the step it came from, and asks what's next, with the note's `#next` steps first. A
+  project's page changes its status (active, waiting on something, someday, done) and its deadline.
+  The menu marks an active project with no next action and no `#next` step 🚩, the same rule as HQ's
+  Stalled list, and lists waiting projects with what they wait on. The Review's week has a projects
+  step: each next action, ticked as you copy it into the notebook.
+- **Birthdays** from your people notes: the date in a note's `DOB::` line (`1990-03-18`, or
+  `5 November` when the year isn't known) puts a 🎂 on the calendar every year, with the age when
+  the year is known. The morning digest names today's birthdays and warns a set number of days
+  ahead (7 by default). A Birthdays page lists the year ahead by month and everyone still missing a
+  date, with a button to set one. `Birthday:: hidden` in a note leaves someone out; a `DOD::` does too.
 - **Auto-scheduling.** Given estimates and a working window, it fits today's unscheduled tasks into
   the free slots rather than leaving you to play tetris.
 - **Events** as their own notes, archived past a date by a command.
@@ -32,7 +50,9 @@ Its plugin id is `brewin-tasks`; it is called Brewin Planner because it grew pas
 Tasks and routines are notes tagged `task`, in an items folder and a routines folder; completing one
 moves it to a done folder. Events live in a calendar folder with their own archive. Project tasks are
 read from the projects folder, so a project note's next actions appear on the same calendar without
-being duplicated.
+being duplicated. A task note joins a project with `project: "[[Project name]]"` in its frontmatter
+(set from the task's ⋯ menu, the task form, or by dragging it onto the project in the menu), and the
+project's page in the dashboard shows both: its task notes, then the checkbox lines in its note.
 
 Everything is plain frontmatter, which is the point: the same data is queryable with Dataview and
 readable with the plugin switched off.
@@ -40,7 +60,9 @@ readable with the plugin switched off.
 ## Views, commands, settings
 
 Three views — dashboard, calendar and time report — on the `checkmark`, `calendar` and `plus-circle`
-ribbon icons. Commands cover quick capture, opening each view, editing and scheduling the active
+ribbon icons. The dashboard's menu folds to a rail of icons with « at its foot (or the *Toggle the
+dashboard menu* command, which opens the drawer on a phone). **✎ Edit menu** turns on ↑ ↓ and show/hide
+for every entry; **Save this view…** keeps the current view, project, context and search under a name. Commands cover quick capture, opening each view, editing and scheduling the active
 task, archiving done tasks and past events, rescheduling everything overdue, auto-scheduling today,
 searching tasks, creating an event, and inserting a week's task summary into a review note.
 

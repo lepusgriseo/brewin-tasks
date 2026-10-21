@@ -136,6 +136,8 @@ export class CalendarView extends ItemView {
     }
     // Brewin Fitness's plan — one source of truth for training instead of hand-made events.
     items.push(...this.plugin.trainingItems(from, to).filter((it) => catShown(it.category)));
+    // Birthdays from the people notes' DOB:: lines.
+    items.push(...this.plugin.birthdayItems(from, to));
     if (token !== this.renderToken) return; // a newer render superseded this one
 
     const byDay = groupItemsByDay(items);
@@ -743,7 +745,8 @@ export class CalendarView extends ItemView {
     }
     if (it.kind === "event" && it.location) el.setAttr("title", `📍 ${it.location}`);
     if (it.category === "Archived") el.addClass("brewin-archived");
-    const glyph = it.kind === "task" ? "●" : it.kind === "event" ? "▮" : it.kind === "project" ? "◆" : it.kind === "training" ? "▲" : "◇";
+    const glyph =
+      it.kind === "task" ? "●" : it.kind === "event" ? "▮" : it.kind === "project" ? "◆" : it.kind === "training" ? "▲" : it.kind === "birthday" ? "🎂" : "◇";
     el.createSpan({ cls: "g", text: glyph + " " });
     // A training session repeats by plan, not by RRULE — the 🔁 would be noise on every one.
     const label = (it.recurring && it.kind !== "training" ? "🔁 " : "") + (it.start ? `${it.start} ${it.title}` : it.title);
@@ -753,6 +756,7 @@ export class CalendarView extends ItemView {
       if (this.consumeClick()) return;
       else if (it.kind === "project") void this.openProjectLine(it);
       else if (it.kind === "training") void this.plugin.openTraining(it);
+      else if (it.kind === "birthday") void this.plugin.openPath(it.path);
       else this.openEdit(it);
     });
     if (it.kind === "event") {
@@ -929,9 +933,9 @@ export class CalendarView extends ItemView {
    *  not owned by this store). Recurring tasks and events both drag — the drop asks which
    *  occurrences to move, same "single/following/all" scope either kind. */
   private makeDraggable(el: HTMLElement, item: CalendarItem): void {
-    // Project tasks belong to their project note and training to the Fitness plan; neither is
-    // this calendar's to move.
-    if (item.kind === "project" || item.kind === "training") return;
+    // Project tasks belong to their project note, training to the Fitness plan and a birthday to
+    // the person; none is this calendar's to move.
+    if (item.kind === "project" || item.kind === "training" || item.kind === "birthday") return;
     el.addClass("brewin-draggable");
 
     let ghost: HTMLElement | null = null;

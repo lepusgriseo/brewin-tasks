@@ -19,6 +19,35 @@ import { search } from "./search";
 import { stepAnchor, visibleRange } from "./calendar";
 import { EventModal } from "./eventModal";
 import { PROJECTS_CATEGORY } from "./settings";
+import { PromptModal } from "./promptModal";
+import { ProjectSuggestModal } from "./projectSuggestModal";
+import { isOpen } from "./status";
+import { toWikilink } from "./task";
+import { birthdayPage, birthdaysBetween, formatBirthDate, parseBirthDate, Person } from "./birthdays";
+import { deadline, deadlineLabel, isStalled, plainText, PROJECT_STATUSES, ProjectStatus, STATUS_GLYPH, STATUS_LABEL } from "./projects";
+import type { ProjectInfo } from "./projects";
+import { NextActionModal } from "./nextActionModal";
+import {
+  canHideView,
+  contextKey,
+  DashState,
+  DROP_ONLY,
+  linkedTaskCounts,
+  matchesFilter,
+  MenuSection,
+  moveView,
+  newFilterId,
+  orderedViews,
+  projectKey,
+  resolveDrop,
+  SavedFilter,
+  sectionKey,
+  suggestFilterName,
+  todayProgress,
+  toggleHidden,
+  viewCounts,
+  viewKey,
+} from "./dashMenu";
 import { formatEstimate, parseEstimate, workload } from "./estimate";
 import {
   attentionTasks,
@@ -41,6 +70,17 @@ import {
 import { CalendarItem, Task } from "./types";
 
 export const BREWIN_VIEW_TYPE = "brewin-tasks-dashboard";
+
+/** Below this width the menu stops being a column and becomes a drawer behind ☰. */
+const MENU_DRAWER_BELOW = 620;
+
+/** A project as the dashboard shows it: the note's own fields, and its open checkbox lines. */
+interface MenuProject {
+  path: string;
+  name: string;
+  info: ProjectInfo;
+  inline: ProjectTask[];
+}
 
 const PRIORITY_ICON: Record<string, string> = { high: "🔴", normal: "", low: "🔽" };
 
@@ -87,6 +127,8 @@ export class DashboardView extends ItemView {
   private reviewUnschOpen = true;
   /** Rows already copied into the paper journal. Session state — never written to a note. */
   private transferred = new Set<string>();
+  /** Whether the Review's projects step is open. Session state, like the Unscheduled fold. */
+  private reviewProjOpen = true;
 
   constructor(leaf: WorkspaceLeaf, private plugin: BrewinTasksPlugin) {
     super(leaf);
@@ -103,6 +145,11 @@ export class DashboardView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    this.registerDomEvent(this.contentEl, "keydown", (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || !this.drawer || !this.menuOpen) return;
+      e.preventDefault();
+      this.setMenuOpen(false);
+    });
     // Checked ONCE per fresh leaf open, not on every render — otherwise clearing your own
     // backlog mid-session would yank you back to Today while you're still looking at Attention.
     if (this.plugin.settings.dashboardDefaultToAttentionWhenBehind) {
@@ -115,81 +162,202 @@ export class DashboardView extends ItemView {
 
   /** The list area under the controls. Search and filters redraw only this. */
   private bodyEl: HTMLElement | null = null;
+  /** The task column — the one that scrolls — and the menu pane beside it (or, when narrow, over it). */
+  private mainEl: HTMLElement | null = null;
+  private menuEl: HTMLElement | null = null;
+  /** Narrow — a phone, or a pane under `MENU_DRAWER_BELOW` wide: the menu is a drawer behind ☰. */
+  private drawer = false;
+  /** The drawer is showing. Kept across redraws, so ticking a box doesn't slam it shut. */
+  private menuOpen = false;
+  /** The menu is in reorder-and-hide mode. */
+  private menuEditing = false;
+  /** One project shown on its own (its note's path) in place of a view. */
+  private project: string | null = null;
+  /** Every project not yet done, with its open checkbox lines, read once per full render. */
+  private projects: MenuProject[] = [];
+  /** What each view has left to do, for the menu and the ☰ dot. */
+  private counts: Record<DashView, number | null> = viewCounts([], todayISO());
+  /** Bumped by every render, so an earlier one that finishes late can't draw over a newer one. */
+  private renderSeq = 0;
 
   async render(): Promise<void> {
+    const seq = ++this.renderSeq;
+    const projects = await this.loadProjects();
+    if (seq !== this.renderSeq) return;
+    this.projects = projects;
+    // The project shown on its own was finished, archived or renamed: fall back to the view under it.
+    if (this.project && !projects.some((p) => p.path === this.project)) this.project = null;
+
     const root = this.contentEl;
-    // Keep your place: this redraws after every tick and every relevant vault change.
-    const scroll = root.scrollTop;
+    // Keep your place in both columns: this redraws after every tick and every relevant vault change.
+    const mainScroll = this.mainEl?.scrollTop ?? 0;
+    const menuScroll = this.menuEl?.querySelector(".brewin-menu-scroll")?.scrollTop ?? 0;
+    const active = document.activeElement;
+    const typing = active instanceof HTMLInputElement && active.classList.contains("brewin-search") && root.contains(active) ? active.selectionStart : null;
+
+    const today = todayISO();
+    const tasks = this.plugin.store.getTasks();
+    this.counts = viewCounts(tasks, today);
+    // A context filter whose last open task has gone would leave an empty list with no menu entry to undo it.
+    if (this.contextFilter && !filterableContexts(tasks).some((c) => c.value.toLowerCase() === this.contextFilter!.toLowerCase())) {
+      this.contextFilter = null;
+    }
+
     root.empty();
-    root.addClass("brewin-dashboard");
-    this.renderChrome(root);
-    this.bodyEl = root.createDiv({ cls: "brewin-dash-body" });
+    this.drawer = this.isDrawerMode();
+    root.addClass("brewin-dashboard", "has-menu");
+    root.toggleClass("is-drawer", this.drawer);
+    root.toggleClass("is-menu-open", this.drawer && this.menuOpen);
+    root.toggleClass("is-menu-collapsed", !this.drawer && this.plugin.settings.menuCollapsed);
+
+    this.menuEl = root.createDiv({ cls: "brewin-menu" });
+    this.renderMenu(this.menuEl);
+    if (this.drawer) root.createDiv({ cls: "brewin-menu-scrim" }).addEventListener("click", () => this.setMenuOpen(false));
+
+    const main = root.createDiv({ cls: "brewin-dash-main" });
+    this.mainEl = main;
+    this.renderChrome(main);
+    this.bodyEl = main.createDiv({ cls: "brewin-dash-body" });
     await this.renderBody();
     // On a phone, a new task is one thumb-reach away wherever you have scrolled to.
     if (Platform.isPhone) {
       const fab = root.createEl("button", { cls: "brewin-fab mod-cta" });
       setIcon(fab, "plus");
       fab.setAttr("aria-label", "New task");
-      fab.addEventListener("click", () => new CaptureModal(this.app, this.plugin.store, this.plugin.settings, () => this.render()).open());
+      fab.addEventListener("click", () => this.newTask());
     }
-    root.scrollTop = scroll;
+    main.scrollTop = mainScroll;
+    const menuScroller = this.menuEl.querySelector(".brewin-menu-scroll");
+    if (menuScroller) menuScroller.scrollTop = menuScroll;
+    // A redraw mid-search (a sync landed, a reminder fired) must not take the keyboard away.
+    if (typing !== null) {
+      const input = root.querySelector<HTMLInputElement>("input.brewin-search");
+      input?.focus();
+      input?.setSelectionRange(typing, typing);
+    }
+  }
+
+  /** Narrow enough that a menu column would squeeze the list: a phone, or a narrow pane. */
+  private isDrawerMode(): boolean {
+    if (Platform.isPhone) return true;
+    const w = this.contentEl.clientWidth;
+    return w > 0 && w < MENU_DRAWER_BELOW; // 0 = a background tab not laid out yet: assume there's room
+  }
+
+  /** Dragging the pane narrower (or wider) than the threshold swaps column and drawer. */
+  onResize(): void {
+    if (this.isDrawerMode() !== this.drawer) void this.render();
+  }
+
+  private setMenuOpen(open: boolean): void {
+    this.menuOpen = open;
+    this.contentEl.toggleClass("is-menu-open", open && this.drawer);
+  }
+
+  /** ☰ on a phone; fold to icons and back on a wide screen. Also the "Toggle menu" command. */
+  async toggleMenu(): Promise<void> {
+    if (this.drawer) {
+      this.setMenuOpen(!this.menuOpen);
+      return;
+    }
+    this.plugin.settings.menuCollapsed = !this.plugin.settings.menuCollapsed;
+    await this.plugin.saveSettings();
+    await this.render();
+  }
+
+  /** The search box lives in the menu only when the menu is a full-width column. */
+  private searchInMenu(): boolean {
+    return !this.drawer && !this.plugin.settings.menuCollapsed;
+  }
+
+  private state(): DashState {
+    return { view: this.view, project: this.project, context: this.contextFilter, query: this.query, groupBy: this.groupBy };
+  }
+
+  /** Change what the list shows, close the drawer, and start the new list from the top. */
+  private go(next: Partial<DashState>): void {
+    if (next.view !== undefined) this.view = next.view;
+    if (next.project !== undefined) this.project = next.project;
+    if (next.context !== undefined) this.contextFilter = next.context;
+    if (next.query !== undefined) this.query = next.query;
+    if (next.groupBy !== undefined) this.groupBy = next.groupBy;
+    this.menuOpen = false;
+    if (this.mainEl) this.mainEl.scrollTop = 0;
+    void this.render();
   }
 
   /**
-   * Tabs, search and filters. Built once per full render — typing in search must never rebuild
-   * the input itself: on iOS that breaks autocorrect and makes the keyboard flicker.
+   * Projects not yet done. Waiting and Someday ones are loaded too: the menu lists what the waiting
+   * ones wait on, and any of them can be opened on its own page.
+   */
+  private async loadProjects(): Promise<MenuProject[]> {
+    const src = new ProjectTaskSource(this.app, this.plugin.settings);
+    const lines = new Map(groupByProject(await src.getProjectTasks()).map((g) => [g.path, g.tasks]));
+    return this.plugin.projects
+      .list()
+      .filter((info) => info.status !== "done")
+      .map((info) => ({ path: info.path, name: info.name, info, inline: lines.get(info.path) ?? [] }));
+  }
+
+  /** The projects being worked on now — the ones whose steps count, and that the calendar shows. */
+  private activeProjects(): MenuProject[] {
+    return this.projects.filter((p) => p.info.status === "active");
+  }
+
+  /** A new task starts inside the project, and with the context, that the list is showing. */
+  private newTask(): void {
+    this.setMenuOpen(false);
+    const proj = this.project ? this.projects.find((p) => p.path === this.project) : undefined;
+    new CaptureModal(this.app, this.plugin.store, this.plugin.settings, () => this.render())
+      .withPreset({
+        project: proj ? { link: toWikilink(proj.name), name: proj.name } : null,
+        contexts: this.contextFilter ? [this.contextFilter] : [],
+      })
+      .open();
+  }
+
+  private matchedFilter(): SavedFilter | null {
+    const state = this.state();
+    return this.plugin.settings.savedFilters.find((f) => matchesFilter(f, state)) ?? null;
+  }
+
+  private currentTitle(): string {
+    const saved = this.matchedFilter();
+    if (saved) return `🔖 ${saved.name}`;
+    if (this.project) return `⚡ ${this.projects.find((p) => p.path === this.project)?.name ?? "Project"}`;
+    const v = DASH_VIEWS.find((x) => x.id === this.view);
+    return v ? `${v.icon} ${v.label}` : "";
+  }
+
+  /**
+   * Above the list: where you are, and the controls that belong to this list. Built once per full
+   * render — typing in search must never rebuild the input itself: on iOS that breaks autocorrect
+   * and makes the keyboard flicker.
    */
   private renderChrome(root: HTMLElement): void {
-    const today = todayISO();
-    const allTasks = this.plugin.store.getTasks();
-
-    // ── View switcher: one row, swiped sideways on a phone rather than wrapping onto two ──
-    const att = attentionTasks(allTasks, today);
-    const attentionCount = att.overdue.length + att.slipped.length;
-    const seg = root.createDiv({ cls: "brewin-view-seg" });
-    for (const v of DASH_VIEWS) {
-      const label = v.id === "attention" && attentionCount ? `${v.icon} ${v.label} (${attentionCount})` : `${v.icon} ${v.label}`;
-      const b = seg.createEl("button", { text: label, cls: this.view === v.id ? "active" : "" });
-      b.setAttr("aria-current", String(this.view === v.id));
-      b.addEventListener("click", () => {
-        this.view = v.id;
-        this.render();
-      });
+    const header = root.createDiv({ cls: "brewin-dash-header" });
+    const bar = header.createDiv({ cls: "brewin-dash-titlebar" });
+    if (this.drawer) {
+      const burger = bar.createEl("button", { cls: "clickable-icon brewin-menu-btn" });
+      setIcon(burger, "menu");
+      burger.setAttr("aria-label", "Menu");
+      // Something is overdue: say so on the button, since the menu with its red count is shut.
+      if (this.counts.attention) burger.createSpan({ cls: "brewin-menu-btn-dot" });
+      burger.addEventListener("click", () => this.setMenuOpen(!this.menuOpen));
     }
-    window.setTimeout(() => seg.querySelector(".active")?.scrollIntoView({ block: "nearest", inline: "center" }), 0);
-
-    // ── Toolbar ──
-    const toolbar = root.createDiv({ cls: "brewin-toolbar" });
-    if (!Platform.isPhone) {
-      toolbar.createEl("button", { text: "＋ New task", cls: "mod-cta" }).addEventListener("click", () => {
-        new CaptureModal(this.app, this.plugin.store, this.plugin.settings, () => this.render()).open();
-      });
+    bar.createDiv({ cls: "brewin-dash-title", text: this.currentTitle() });
+    if (this.project) {
+      const open = bar.createEl("button", { cls: "clickable-icon" });
+      setIcon(open, "file-text");
+      open.setAttr("aria-label", "Open the project note");
+      const path = this.project;
+      open.addEventListener("click", () => this.openNote(path));
     }
-    const searchEl = toolbar.createEl("input", { cls: "brewin-search", type: "search" });
-    searchEl.placeholder = "Search tasks…";
-    searchEl.value = this.query;
-    searchEl.addEventListener("input", () => {
-      this.query = searchEl.value;
-      void this.renderBody();
-    });
 
-    // Context filter — only contexts with OPEN tasks, case-merged, with their counts.
-    const contexts = filterableContexts(allTasks);
-    if (this.contextFilter && !contexts.some((c) => c.value === this.contextFilter)) this.contextFilter = null;
-    if (contexts.length) {
-      const sel = toolbar.createEl("select", { cls: "brewin-context-filter" });
-      sel.createEl("option", { text: "All contexts", value: "" });
-      contexts.forEach((c) => sel.createEl("option", { text: `${c.value} (${c.count})`, value: c.value }));
-      sel.value = this.contextFilter ?? "";
-      sel.addEventListener("change", () => {
-        this.contextFilter = sel.value || null;
-        void this.renderBody();
-      });
-    }
-    // Grouping only exists in All, so it only appears there — it was a third row everywhere else.
-    if (this.view === "all") {
-      toolbar.addClass("has-groupby");
-      const grp = toolbar.createEl("select", { cls: "brewin-groupby" });
+    const actions = bar.createDiv({ cls: "brewin-dash-actions" });
+    // Grouping only exists in All.
+    if (this.view === "all" && !this.project) {
+      const grp = actions.createEl("select", { cls: "brewin-groupby dropdown" });
       grp.createEl("option", { text: "Group: date", value: "date" });
       grp.createEl("option", { text: "Group: context", value: "context" });
       grp.value = this.groupBy;
@@ -198,21 +366,12 @@ export class DashboardView extends ItemView {
         void this.renderBody();
       });
     }
-    const selBtn = toolbar.createEl("button", { cls: "brewin-select-toggle" + (this.selecting ? " mod-cta" : "") });
-    selBtn.setText(this.selecting ? "Done" : "☑");
-    selBtn.setAttr("aria-label", this.selecting ? "Finish selecting" : "Select tasks");
-    selBtn.addEventListener("click", () => {
-      this.selecting = !this.selecting;
-      if (!this.selecting) this.selected.clear();
-      this.render();
-    });
-
     // Layout toggle — only Week and Projects have headings to turn into columns, and a phone is
     // too narrow for the Week board, so it is not offered there.
-    if (this.view === "projects" || (this.view === "week" && !Platform.isPhone)) {
+    if (!this.project && (this.view === "projects" || (this.view === "week" && !Platform.isPhone))) {
       const key = this.view === "week" ? "weekLayout" : "projectsLayout";
       const current = this.plugin.settings[key];
-      const lay = toolbar.createDiv({ cls: "brewin-layout-seg" });
+      const lay = actions.createDiv({ cls: "brewin-layout-seg" });
       ([
         ["list", "≡ List"],
         ["board", "▦ Board"],
@@ -225,10 +384,483 @@ export class DashboardView extends ItemView {
         });
       });
     }
+    const selBtn = actions.createEl("button", { cls: "brewin-select-toggle" + (this.selecting ? " mod-cta" : "") });
+    if (this.view === "birthdays" && !this.project) selBtn.addClass("brewin-hidden"); // there are no tasks to select
+    selBtn.setText(this.selecting ? "Done" : "☑");
+    selBtn.setAttr("aria-label", this.selecting ? "Finish selecting" : "Select tasks");
+    selBtn.addEventListener("click", () => {
+      this.selecting = !this.selecting;
+      if (!this.selecting) this.selected.clear();
+      this.render();
+    });
+    // A narrow desktop pane has neither the menu's ＋ in view nor the phone's floating one.
+    if (this.drawer && !Platform.isPhone) {
+      const add = actions.createEl("button", { cls: "mod-cta", text: "＋" });
+      add.setAttr("aria-label", "New task");
+      add.addEventListener("click", () => this.newTask());
+    }
+
+    // Search (when the menu isn't showing it) and the context the list is narrowed to.
+    const tools = header.createDiv({ cls: "brewin-toolbar" });
+    if (!this.searchInMenu()) this.renderSearch(tools);
+    if (this.contextFilter) {
+      const chip = tools.createEl("button", { cls: "brewin-filter-chip", text: `@${this.contextFilter} ✕` });
+      chip.setAttr("aria-label", `Stop filtering by @${this.contextFilter}`);
+      chip.addEventListener("click", () => this.go({ context: null }));
+    }
+    if (!tools.childElementCount) tools.remove();
 
     // A fixed host so ticking a box redraws only the bar — a full re-render would drop
     // scroll position and search focus on every tick.
     root.createDiv({ cls: "brewin-bulk-host" });
+  }
+
+  private renderSearch(parent: HTMLElement): void {
+    const searchEl = parent.createEl("input", { cls: "brewin-search", type: "search" });
+    searchEl.placeholder = this.project ? "Search this project…" : this.view === "birthdays" ? "Search people…" : "Search tasks…";
+    searchEl.value = this.query;
+    searchEl.addEventListener("input", () => {
+      this.query = searchEl.value;
+      void this.renderBody();
+    });
+  }
+
+  // ── The menu pane ──────────────────────────────────────────────────────────
+
+  private renderMenu(menu: HTMLElement): void {
+    const s = this.plugin.settings;
+    const today = todayISO();
+    const tasks = this.plugin.store.getTasks();
+    const hidden = new Set(s.menuHidden);
+    const editing = this.menuEditing;
+    const shows = (key: string) => editing || !hidden.has(key);
+    menu.toggleClass("is-editing", editing);
+
+    const head = menu.createDiv({ cls: "brewin-menu-head" });
+    if (this.drawer) {
+      const top = head.createDiv({ cls: "brewin-menu-top" });
+      top.createDiv({ cls: "brewin-menu-heading", text: "Planner" });
+      const close = top.createEl("button", { cls: "clickable-icon" });
+      setIcon(close, "x");
+      close.setAttr("aria-label", "Close the menu");
+      close.addEventListener("click", () => this.setMenuOpen(false));
+    }
+    const add = head.createEl("button", { cls: "mod-cta brewin-menu-new" });
+    setIcon(add.createSpan({ cls: "brewin-menu-icon" }), "plus");
+    add.createSpan({ cls: "brewin-menu-label", text: "New task" });
+    this.railLabel(add, "New task");
+    add.addEventListener("click", () => this.newTask());
+    if (this.searchInMenu()) this.renderSearch(head);
+
+    const scroll = menu.createDiv({ cls: "brewin-menu-scroll" });
+
+    // Places to drop a task that aren't views. Only shown mid-drag, so they cost nothing otherwise.
+    const drops = scroll.createDiv({ cls: "brewin-menu-drops" });
+    for (const d of DROP_ONLY) this.menuItem(drops, { icon: d.icon, label: d.label, drop: d.key });
+
+    if (shows(sectionKey("progress"))) this.renderProgress(scroll, tasks, today, hidden.has(sectionKey("progress")));
+
+    // ── Views ──
+    const views = scroll.createDiv({ cls: "brewin-menu-views" });
+    const linked = linkedTaskCounts(tasks);
+    for (const id of orderedViews(s.menuOrder)) {
+      const key = viewKey(id);
+      if (!shows(key)) continue;
+      const v = DASH_VIEWS.find((x) => x.id === id);
+      if (!v) continue;
+      const count =
+        id === "projects"
+          ? this.activeProjects().reduce((n, p) => n + p.inline.length + (linked.get(p.path) ?? 0), 0)
+          : id === "birthdays"
+            ? this.birthdaysSoon(today)
+            : this.counts[id];
+      const item = this.menuItem(views, {
+        icon: v.icon,
+        label: v.label,
+        count,
+        alert: id === "attention",
+        active: !this.project && this.view === id,
+        hidden: hidden.has(key),
+        drop: id === "today" || id === "inbox" ? key : undefined,
+        onClick: () => this.go({ view: id, project: null }),
+      });
+      if (editing) this.editControls(item, key, id);
+    }
+
+    // ── Projects ── active ones, a 🚩 on any with nothing to do next; then what is waiting, and on what.
+    const projBody = this.menuSection(scroll, "projects", "Projects");
+    if (projBody) {
+      const listed = this.projects.filter((p) => p.info.status === "active" || p.info.status === "waiting");
+      listed.sort((a, b) => Number(a.info.status === "waiting") - Number(b.info.status === "waiting"));
+      for (const p of listed) {
+        const key = projectKey(p.path);
+        if (!shows(key)) continue;
+        const waiting = p.info.status === "waiting";
+        const stalled = isStalled(p.info, p.inline);
+        const item = this.menuItem(projBody, {
+          icon: waiting ? "⏳" : stalled ? "🚩" : "⚡",
+          label: p.name,
+          sub: waiting ? (p.info.waitingOn ? `on ${p.info.waitingOn}` : "waiting") : undefined,
+          note: stalled ? "no next action" : undefined,
+          count: waiting ? null : p.inline.length + (linked.get(p.path) ?? 0),
+          active: this.project === p.path,
+          hidden: hidden.has(key),
+          drop: key,
+          onClick: () => this.go({ project: p.path }),
+        });
+        item.addEventListener("contextmenu", (e) => {
+          e.preventDefault();
+          const m = new Menu();
+          m.addItem((i) => i.setTitle("Open project note").setIcon("file-text").onClick(() => this.openNote(p.path)));
+          m.showAtMouseEvent(e);
+        });
+        if (editing) this.editControls(item, key);
+      }
+      if (!listed.length) projBody.createDiv({ cls: "brewin-menu-empty", text: "No active projects." });
+    }
+
+    // ── Contexts ── (they replace the old dropdown: tap to narrow the list, tap again to undo)
+    const ctxBody = this.menuSection(scroll, "contexts", "Contexts");
+    if (ctxBody) {
+      const contexts = filterableContexts(tasks);
+      for (const c of contexts) {
+        const key = contextKey(c.value);
+        if (!shows(key)) continue;
+        const on = !!this.contextFilter && this.contextFilter.toLowerCase() === c.value.toLowerCase();
+        const item = this.menuItem(ctxBody, {
+          icon: "＠",
+          label: c.value,
+          count: c.count,
+          active: on,
+          hidden: hidden.has(key),
+          drop: `context:${c.value}`,
+          onClick: () => this.go({ context: on ? null : c.value }),
+        });
+        if (editing) this.editControls(item, key);
+      }
+      if (!contexts.length) ctxBody.createDiv({ cls: "brewin-menu-empty", text: "No contexts on open tasks." });
+    }
+
+    // ── Saved filters ──
+    const filterBody = this.menuSection(scroll, "filters", "Saved filters");
+    if (filterBody) {
+      const state = this.state();
+      for (const f of s.savedFilters) {
+        const item = this.menuItem(filterBody, {
+          icon: "🔖",
+          label: f.name,
+          active: matchesFilter(f, state),
+          onClick: () => this.go({ view: f.view, project: f.project, context: f.context, query: f.query, groupBy: f.groupBy }),
+        });
+        if (editing) this.filterControls(item, f);
+      }
+      if (!editing) {
+        const save = this.menuItem(filterBody, { icon: "＋", label: "Save this view…", onClick: () => this.saveCurrentFilter() });
+        save.addClass("is-quiet");
+      }
+    }
+
+    // ── Elsewhere in the Planner ──
+    const linkBody = this.menuSection(scroll, "links", "Go to");
+    if (linkBody) {
+      this.menuItem(linkBody, {
+        icon: "📆",
+        label: "Calendar",
+        onClick: () => {
+          this.setMenuOpen(false);
+          void this.plugin.activateCalendar();
+        },
+      });
+      this.menuItem(linkBody, {
+        icon: "⏱",
+        label: "Time report",
+        onClick: () => {
+          this.setMenuOpen(false);
+          void this.plugin.activateTime();
+        },
+      });
+    }
+
+    const foot = menu.createDiv({ cls: "brewin-menu-foot" });
+    const edit = foot.createEl("button", { cls: "brewin-menu-edit-btn" + (editing ? " mod-cta" : ""), text: editing ? "Done" : "✎ Edit menu" });
+    edit.addEventListener("click", () => {
+      this.menuEditing = !editing;
+      this.redrawMenu();
+    });
+    if (editing) {
+      foot.createEl("button", { cls: "brewin-menu-edit-btn", text: "Reset" }).addEventListener("click", async () => {
+        s.menuOrder = [];
+        s.menuHidden = [];
+        s.menuFolded = [];
+        await this.plugin.saveSettings();
+        this.redrawMenu();
+      });
+    }
+    if (!this.drawer) {
+      const rail = s.menuCollapsed;
+      const fold = foot.createEl("button", { cls: "clickable-icon brewin-menu-fold" });
+      setIcon(fold, rail ? "chevrons-right" : "chevrons-left");
+      fold.setAttr("aria-label", rail ? "Expand the menu" : "Fold the menu to icons");
+      fold.addEventListener("click", () => void this.toggleMenu());
+    }
+  }
+
+  /** Rebuild only the menu — for folding sections and editing it, where the list hasn't changed. */
+  private redrawMenu(): void {
+    const menu = this.menuEl;
+    if (!menu) return;
+    const scroll = menu.querySelector(".brewin-menu-scroll")?.scrollTop ?? 0;
+    menu.empty();
+    this.renderMenu(menu);
+    const scroller = menu.querySelector(".brewin-menu-scroll");
+    if (scroller) scroller.scrollTop = scroll;
+  }
+
+  /** Folded to icons, an entry's name is its tooltip; at full width the name is right there. */
+  private railLabel(el: HTMLElement, label: string): void {
+    if (!this.drawer && this.plugin.settings.menuCollapsed) el.setAttr("aria-label", label);
+    else el.setAttr("title", label); // long project names are cut short at full width
+  }
+
+  private menuItem(
+    parent: HTMLElement,
+    o: {
+      icon: string;
+      label: string;
+      /** A second, quieter line under the label. */
+      sub?: string;
+      /** Said in the tooltip only. */
+      note?: string;
+      count?: number | null;
+      alert?: boolean;
+      active?: boolean;
+      hidden?: boolean;
+      drop?: string;
+      onClick?: () => void;
+    }
+  ): HTMLElement {
+    const el = parent.createDiv({ cls: "brewin-menu-item" });
+    el.toggleClass("is-active", !!o.active);
+    el.toggleClass("is-hidden", !!o.hidden);
+    el.setAttr("role", "button");
+    el.tabIndex = 0;
+    if (o.active) el.setAttr("aria-current", "page");
+    el.createSpan({ cls: "brewin-menu-icon", text: o.icon });
+    if (o.sub) {
+      const text = el.createDiv({ cls: "brewin-menu-text" });
+      text.createSpan({ cls: "brewin-menu-label", text: o.label });
+      text.createSpan({ cls: "brewin-menu-sub", text: o.sub });
+    } else el.createSpan({ cls: "brewin-menu-label", text: o.label });
+    if (o.count) el.createSpan({ cls: "brewin-menu-count" + (o.alert ? " is-alert" : ""), text: String(o.count) });
+    this.railLabel(el, [o.label, o.sub, o.note, o.count ? String(o.count) : ""].filter(Boolean).join(" · "));
+    if (o.drop) el.setAttr("data-drop-menu", o.drop);
+    const run = o.onClick;
+    if (run && !this.menuEditing) {
+      el.addEventListener("click", run);
+      el.addEventListener("keydown", (e: KeyboardEvent) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        e.preventDefault();
+        run();
+      });
+    }
+    return el;
+  }
+
+  /**
+   * A foldable group in the menu. Returns where its entries go, or null when it is folded (or
+   * hidden, outside edit mode). Folding is remembered in settings, so it holds across devices.
+   */
+  private menuSection(parent: HTMLElement, id: MenuSection, label: string): HTMLElement | null {
+    const s = this.plugin.settings;
+    const key = sectionKey(id);
+    const hidden = s.menuHidden.includes(key);
+    if (hidden && !this.menuEditing) return null;
+    const section = parent.createDiv({ cls: "brewin-menu-section" + (hidden ? " is-hidden" : "") });
+    const folded = s.menuFolded.includes(id);
+    const head = section.createDiv({ cls: "brewin-menu-section-head" });
+    head.setAttr("role", "button");
+    head.setAttr("aria-expanded", String(!folded));
+    head.tabIndex = 0;
+    head.createSpan({ cls: "brewin-menu-chevron", text: folded ? "▸" : "▾" });
+    head.createSpan({ cls: "brewin-menu-section-label", text: label });
+    const fold = async () => {
+      s.menuFolded = folded ? s.menuFolded.filter((f) => f !== id) : [...s.menuFolded, id];
+      await this.plugin.saveSettings();
+      this.redrawMenu();
+    };
+    head.addEventListener("click", () => void fold());
+    head.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      void fold();
+    });
+    if (this.menuEditing) this.hideButton(head, key, true);
+    return folded ? null : section.createDiv({ cls: "brewin-menu-section-body" });
+  }
+
+  /** Today's progress, and what Brewin Habits and Brewin Fitness say is behind. */
+  private renderProgress(parent: HTMLElement, tasks: Task[], today: string, hidden: boolean): void {
+    const p = todayProgress(tasks, today);
+    const box = parent.createDiv({ cls: "brewin-menu-progress" + (hidden ? " is-hidden" : "") });
+    const line = box.createDiv({ cls: "brewin-menu-progress-line" });
+    line.createSpan({ cls: "brewin-menu-progress-label", text: "Today" });
+    line.createSpan({ cls: "brewin-menu-progress-figure", text: p.total ? `${p.done} of ${p.total} done` : "nothing planned" });
+    line.createSpan({ cls: "brewin-menu-progress-short", text: `${p.done}/${p.total}` });
+    if (this.menuEditing) this.hideButton(line, sectionKey("progress"), true);
+    const bar = box.createDiv({ cls: "brewin-menu-progress-bar" });
+    bar.createDiv({ cls: "brewin-menu-progress-fill" }).style.width = `${p.total ? Math.round((100 * p.done) / p.total) : 0}%`;
+    this.railLabel(box, p.total ? `Today: ${p.done} of ${p.total} done` : "Nothing planned today");
+
+    const habits = this.plugin.backlog.readHabitsBacklog().habitsBehind;
+    const missed = this.plugin.backlog.readFitnessBacklog().missedSessionsCount;
+    if (!habits && !missed) return;
+    const backlog = box.createDiv({ cls: "brewin-menu-backlog" });
+    if (habits) {
+      const chip = backlog.createEl("button", { cls: "brewin-chip-mini", text: `🔥 ${habits} habit${habits === 1 ? "" : "s"} behind` });
+      chip.addEventListener("click", () => void this.plugin.openSibling("brewin-habits"));
+    }
+    if (missed) {
+      const chip = backlog.createEl("button", { cls: "brewin-chip-mini", text: `🏋 ${missed} session${missed === 1 ? "" : "s"} missed` });
+      chip.addEventListener("click", () => void this.plugin.openSibling("brewin-fitness"));
+    }
+  }
+
+  /** Edit mode: ↑ ↓ for views, and a show/hide eye for everything. */
+  private editControls(item: HTMLElement, key: string, view?: DashView): void {
+    const s = this.plugin.settings;
+    const ctl = item.createDiv({ cls: "brewin-menu-edit" });
+    if (view) {
+      ([
+        [-1, "arrow-up", "Move up"],
+        [1, "arrow-down", "Move down"],
+      ] as const).forEach(([delta, icon, tip]) => {
+        const b = ctl.createEl("button", { cls: "clickable-icon" });
+        setIcon(b, icon);
+        b.setAttr("aria-label", tip);
+        b.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          s.menuOrder = moveView(s.menuOrder, view, delta);
+          await this.plugin.saveSettings();
+          this.redrawMenu();
+        });
+      });
+    }
+    this.hideButton(ctl, key, false, view);
+  }
+
+  private hideButton(parent: HTMLElement, key: string, inHeader: boolean, view?: DashView): void {
+    const s = this.plugin.settings;
+    const hidden = s.menuHidden.includes(key);
+    const b = parent.createEl("button", { cls: "clickable-icon brewin-menu-eye" + (inHeader ? " is-in-header" : "") });
+    setIcon(b, hidden ? "eye-off" : "eye");
+    b.setAttr("aria-label", hidden ? "Show in the menu" : "Hide from the menu");
+    b.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (view && !canHideView(s.menuHidden, view)) {
+        new Notice("Keep at least one view in the menu.");
+        return;
+      }
+      s.menuHidden = toggleHidden(s.menuHidden, key);
+      await this.plugin.saveSettings();
+      this.redrawMenu();
+    });
+  }
+
+  /** Edit mode for a saved filter: rename it, point it at what's showing now, or delete it. */
+  private filterControls(item: HTMLElement, f: SavedFilter): void {
+    const s = this.plugin.settings;
+    const ctl = item.createDiv({ cls: "brewin-menu-edit" });
+    const btn = (icon: string, tip: string, fn: () => void) => {
+      const b = ctl.createEl("button", { cls: "clickable-icon" });
+      setIcon(b, icon);
+      b.setAttr("aria-label", tip);
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        fn();
+      });
+    };
+    const replace = async (next: SavedFilter | null) => {
+      s.savedFilters = next ? s.savedFilters.map((x) => (x.id === f.id ? next : x)) : s.savedFilters.filter((x) => x.id !== f.id);
+      await this.plugin.saveSettings();
+      this.redrawMenu();
+    };
+    btn("pencil", "Rename", () =>
+      new PromptModal(this.app, {
+        title: "Rename filter",
+        initial: f.name,
+        cta: "Rename",
+        onSubmit: (name) => {
+          if (name.trim()) void replace({ ...f, name: name.trim() });
+        },
+      }).open()
+    );
+    btn("refresh-cw", "Update to what's showing now", () => void replace({ ...f, ...this.state(), query: this.query.trim() }));
+    btn("trash", "Delete", () =>
+      new ConfirmModal(this.app, {
+        title: `Delete “${f.name}”`,
+        body: "Only the saved filter goes — no tasks are touched.",
+        cta: "Delete",
+        onConfirm: () => void replace(null),
+      }).open()
+    );
+  }
+
+  private saveCurrentFilter(): void {
+    const state = this.state();
+    const projectName = this.project ? this.projects.find((p) => p.path === this.project)?.name ?? null : null;
+    new PromptModal(this.app, {
+      title: "Save this view",
+      body: "Keeps the view, project, context and search together under one name in the menu.",
+      initial: suggestFilterName(state, projectName),
+      cta: "Save",
+      onSubmit: async (name) => {
+        const s = this.plugin.settings;
+        if (!name.trim()) return;
+        s.savedFilters = [...s.savedFilters, { ...state, query: state.query.trim(), id: newFilterId(s.savedFilters, Date.now()), name: name.trim() }];
+        await this.plugin.saveSettings();
+        this.redrawMenu();
+        // The title becomes the filter's name now that the state has one.
+        this.contentEl.querySelector(".brewin-dash-title")?.setText(this.currentTitle());
+      },
+    }).open();
+  }
+
+  /** A task dropped on a menu entry: do what the entry means, or say why not. */
+  private async applyMenuDrop(key: string, task: Task): Promise<void> {
+    const fresh = this.plugin.store.getByPath(task.path) ?? task;
+    const today = todayISO();
+    const action = resolveDrop(key, fresh, today, this.plugin.settings.firstDayOfWeek);
+    if (!action) return;
+    const store = this.plugin.store;
+    const t = `“${fresh.title}”`;
+    switch (action.kind) {
+      case "refuse":
+        new Notice(`${t} ${action.reason}.`);
+        return;
+      case "schedule":
+        await store.moveToDay(fresh, action.iso);
+        new Notice(`${t} → ${action.iso === today ? "today" : shortDate(action.iso)}.`);
+        break;
+      case "inbox":
+        await store.backToInbox(fresh);
+        new Notice(`${t} is back in the inbox${fresh.due ? " — it keeps its due date" : ""}.`);
+        break;
+      case "someday":
+        await store.setStatus(fresh, "someday");
+        new Notice(`${t} moved to Someday.`);
+        break;
+      case "context":
+        await store.bulkAddContext([fresh], action.value);
+        new Notice(`Added @${action.value} to ${t}.`);
+        break;
+      case "project": {
+        await store.setProject(fresh, action.path);
+        const name = this.projects.find((p) => p.path === action.path)?.name ?? "the project";
+        new Notice(`${t} is now in ${name}.`);
+        break;
+      }
+    }
+    this.render();
   }
 
   /** The list for the current view, filtered by context and search. */
@@ -247,6 +879,15 @@ export class DashboardView extends ItemView {
     // Search narrows whatever view is showing rather than replacing it.
     if (this.query.trim()) tasks = search(tasks, this.query);
 
+    if (this.project) {
+      this.renderProjectScope(root, tasks, today);
+      return this.renderBulkBar();
+    }
+    if (this.view === "birthdays") {
+      this.renderBirthdays(root, today);
+      return;
+    }
+
     const buckets = classify(tasks, today);
 
     // Group-by-context is an "All" refinement; the focused views have their own shape.
@@ -259,7 +900,7 @@ export class DashboardView extends ItemView {
     if (this.view === "week") { this.renderWeek(root, tasks, today); return this.renderBulkBar(); }
     if (this.view === "inbox") { this.renderInbox(root, tasks); return this.renderBulkBar(); }
     if (this.view === "attention") { this.renderAttention(root, tasks, today); return this.renderBulkBar(); }
-    if (this.view === "projects") { await this.renderProjects(root, today); return this.renderBulkBar(); }
+    if (this.view === "projects") { this.renderProjects(root, tasks, today); return this.renderBulkBar(); }
     if (this.view === "review") { await this.renderReview(root, today); return this.renderBulkBar(); }
 
     // ── Buckets (All) ──
@@ -355,8 +996,7 @@ export class DashboardView extends ItemView {
       }
       this.editTask(task);
     });
-    // A recurring task's date is owned by its rule; dragging it would fight the recurrence.
-    if (!task.recurrence) this.makeCardDraggable(el, task.title, (iso) => this.plugin.store.setScheduled(task, iso));
+    this.makeDraggable(el, task, true);
   }
 
   /** A project checkbox as a card. Read-only position — the column IS its project note. */
@@ -370,7 +1010,7 @@ export class DashboardView extends ItemView {
       await src.complete(pt);
       this.render();
     });
-    top.createSpan({ cls: "brewin-card-title", text: pt.text || "(untitled task)" });
+    top.createSpan({ cls: "brewin-card-title", text: plainText(pt.text) || "(untitled task)" });
 
     const meta = el.createDiv({ cls: "brewin-card-meta" });
     if (pt.scheduled) meta.createSpan({ text: `📅 ${pt.scheduled}` });
@@ -379,14 +1019,27 @@ export class DashboardView extends ItemView {
   }
 
   /**
-   * Pointer-based drag so it works with touch as well as a mouse (matching the calendar).
-   * Movement under 6px is treated as a click, so tapping a card still opens it.
+   * Press-and-hold drag for a task — a board card or, beside the menu, a list row. It lands on a
+   * day column of the week board, or on a menu entry: Today, Inbox, a project, a context, or one
+   * of the drop-only targets the menu shows while a drag is under way.
+   *
+   * A recurring task's dates belong to its rule, so the day targets refuse it; it can still be
+   * given a context or a project.
    */
-  private makeCardDraggable(el: HTMLElement, title: string, apply: (iso: string) => Promise<void>): void {
+  private makeDraggable(el: HTMLElement, task: Task, isCard: boolean): void {
     el.addClass("brewin-draggable");
 
     let ghost: HTMLElement | null = null;
+    // Where the pointer last was, for scrolling the menu while it is held near an edge.
+    let lastX = 0;
+    let lastY = 0;
+    let frame = 0;
+    const tick = () => {
+      if (this.scrollMenuNear(lastX, lastY)) this.highlightColumn(lastX, lastY);
+      frame = window.requestAnimationFrame(tick);
+    };
     const teardown = () => {
+      window.cancelAnimationFrame(frame);
       ghost?.remove();
       ghost = null;
       el.removeClass("brewin-drag-src");
@@ -402,10 +1055,13 @@ export class DashboardView extends ItemView {
         el.addClass("brewin-drag-src");
         this.contentEl.addClass("brewin-is-dragging");
         ghost = document.body.createDiv({ cls: "brewin-drag-ghost" });
-        ghost.setText(title);
+        ghost.setText(task.title);
         hapticTick();
+        if (!this.drawer) frame = window.requestAnimationFrame(tick); // the drawer is shut mid-drag
       },
       onMove: (x, y) => {
+        lastX = x;
+        lastY = y;
         if (ghost) {
           ghost.style.left = x + 10 + "px";
           ghost.style.top = y + 10 + "px";
@@ -414,22 +1070,46 @@ export class DashboardView extends ItemView {
       },
       onDrop: async (x, y) => {
         const target = this.columnAt(x, y);
-        const iso = target?.getAttribute("data-drop-date");
         teardown();
-        this.suppressClick = true; // the trailing click must not also open the task
+        // The trailing click lands on a card (it has its own click handler) — not on a row.
+        if (isCard) this.suppressClick = true;
+        const iso = target?.getAttribute("data-drop-date");
+        const key = target?.getAttribute("data-drop-menu");
         if (iso) {
-          await apply(iso);
-          new Notice(`"${title}" moved to ${shortDate(iso)}.`);
+          if (task.recurrence) {
+            new Notice(`“${task.title}” repeats on its own schedule.`);
+            return;
+          }
+          await this.plugin.store.setScheduled(task, iso);
+          new Notice(`"${task.title}" moved to ${shortDate(iso)}.`);
           this.render();
+        } else if (key) {
+          await this.applyMenuDrop(key, task);
         }
       },
       onCancel: teardown,
     });
   }
 
+  /**
+   * Mid-drag, holding a task near the top or bottom of the menu scrolls it, so projects and
+   * contexts below the fold can be reached. Returns whether it moved.
+   */
+  private scrollMenuNear(x: number, y: number): boolean {
+    const scroller = this.menuEl?.querySelector<HTMLElement>(".brewin-menu-scroll");
+    if (!scroller) return false;
+    const r = scroller.getBoundingClientRect();
+    if (x < r.left || x > r.right) return false;
+    const edge = 56;
+    const before = scroller.scrollTop;
+    if (y > r.bottom - edge) scroller.scrollTop += Math.ceil((y - (r.bottom - edge)) / 4);
+    else if (y < r.top + edge) scroller.scrollTop -= Math.ceil((r.top + edge - y) / 4);
+    return scroller.scrollTop !== before;
+  }
+
   private columnAt(x: number, y: number): HTMLElement | null {
     const el = document.elementFromPoint(x, y) as HTMLElement | null;
-    return (el?.closest("[data-drop-date]") as HTMLElement | null) ?? null;
+    return (el?.closest("[data-drop-date], [data-drop-menu]") as HTMLElement | null) ?? null;
   }
 
   private highlightColumn(x: number, y: number): void {
@@ -508,6 +1188,9 @@ export class DashboardView extends ItemView {
       );
     }
 
+    // ── Week only: each project's next action, copied into the notebook with the week ──
+    if (this.reviewView === "week") this.renderReviewProjects(root, today);
+
     // ── Day-only planning aids: today's shape before transcribing it ──
     if (this.reviewView === "day") {
       this.renderReviewPriority(root, items, this.reviewAnchorISO);
@@ -543,6 +1226,87 @@ export class DashboardView extends ItemView {
     }
 
     renderCount();
+  }
+
+  /**
+   * Project HQ's weekly transfer, inside the Review: each active or waiting project with its next
+   * action, ticked as it's copied into the notebook — and any project without one, with a way to
+   * choose one there and then, so none leaves the review stalled.
+   */
+  private renderReviewProjects(root: HTMLElement, today: string): void {
+    const list = this.projects
+      .filter((p) => p.info.status === "active" || p.info.status === "waiting")
+      .sort((a, b) => Number(a.info.status === "waiting") - Number(b.info.status === "waiting"));
+    if (!list.length) return;
+    const copyable = list.filter((p) => !!p.info.next);
+    const keyOf = (p: MenuProject) => `project|${p.path}`;
+
+    const open = this.reviewProjOpen;
+    const box = root.createDiv({ cls: "brewin-review-unscheduled brewin-review-projects" + (open ? "" : " is-collapsed") });
+    const head = box.createDiv({ cls: "brewin-review-unsch-head" });
+    head.createSpan({ cls: "brewin-expander", text: open ? "▾" : "▸" });
+    head.createEl("h4", { text: "Projects — next actions" });
+    const count = head.createSpan({ cls: "brewin-count" });
+    const renderCount = () => {
+      const n = copyable.filter((p) => this.transferred.has(keyOf(p))).length;
+      count.setText(copyable.length ? `${n} of ${copyable.length}` : String(list.length));
+    };
+    renderCount();
+    head.setAttr("role", "button");
+    head.setAttr("tabindex", "0");
+    head.setAttr("aria-expanded", String(open));
+    const toggle = () => {
+      this.reviewProjOpen = !this.reviewProjOpen;
+      this.render();
+    };
+    head.addEventListener("click", toggle);
+    head.addEventListener("keydown", (e: KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    });
+    if (!open) return;
+
+    for (const p of list) {
+      const key = keyOf(p);
+      const row = box.createDiv({ cls: "brewin-review-row brewin-review-proj" + (this.transferred.has(key) ? " is-transferred" : "") });
+      if (p.info.next) {
+        // As on the days below: "written into the journal", never done. It touches no note.
+        const tick = row.createEl("input", { type: "checkbox", cls: "brewin-transfer-box" });
+        tick.checked = this.transferred.has(key);
+        tick.setAttr("aria-label", `Mark ${p.name}'s next action as transferred`);
+        tick.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (tick.checked) this.transferred.add(key);
+          else this.transferred.delete(key);
+          row.toggleClass("is-transferred", tick.checked);
+          renderCount();
+        });
+      } else {
+        // Nothing to copy yet. An invisible box keeps this row's text in line with the others.
+        const blank = row.createEl("input", { type: "checkbox", cls: "brewin-transfer-box brewin-transfer-blank" });
+        blank.disabled = true;
+        blank.tabIndex = -1;
+        blank.setAttr("aria-hidden", "true");
+      }
+      const waiting = p.info.status === "waiting";
+      row.createSpan({ cls: "brewin-review-glyph", text: STATUS_GLYPH[waiting ? "waiting" : "active"] });
+      const main = row.createDiv({ cls: "brewin-review-title brewin-review-proj-main" });
+      main.createSpan({ cls: "brewin-task-link brewin-review-proj-name", text: p.name }).addEventListener("click", () => this.go({ project: p.path }));
+      const stalled = isStalled(p.info, p.inline);
+      const runners = p.inline.filter((st) => st.isNext).length;
+      const what = waiting
+        ? [p.info.waitingOn ? `waiting on ${p.info.waitingOn}` : "waiting", p.info.next ? `then: ${plainText(p.info.next)}` : ""].filter(Boolean).join(" · ")
+        : plainText(p.info.next) || (stalled ? "🚩 No next action" : `No next action — ${runners} ⚡ step${runners === 1 ? "" : "s"} ready`);
+      main.createSpan({ cls: "brewin-review-proj-next" + (!p.info.next && !waiting ? " is-unset" : ""), text: what });
+      const d = deadline(p.info, today);
+      if (d?.overdue) main.createSpan({ cls: "brewin-review-proj-due", text: `🏁 ${deadlineLabel(d)}` });
+      if (!p.info.next) {
+        const b = row.createEl("button", { cls: "brewin-chip-mini", text: "Choose…" });
+        b.addEventListener("click", () => this.advanceNext(p, false));
+      }
+    }
   }
 
   /** Change day/week and clear the ticks — they belong to the range you were copying out. */
@@ -818,8 +1582,9 @@ export class DashboardView extends ItemView {
     });
   }
 
-  /** Sections folded away this session, by key — they stay folded across redraws. */
-  private folded = new Set<string>();
+  /** Sections folded away this session, by key — they stay folded across redraws. The Birthdays
+   *  page's long tail (everyone without a date) starts folded. */
+  private folded = new Set<string>(["bday-nodate", "bday-hidden", "bday-died"]);
 
   /**
    * Plans for days that have passed, oldest first, each with one-tap answers. They used to sit in
@@ -862,6 +1627,92 @@ export class DashboardView extends ItemView {
       else this.folded.delete(key);
       body.toggleClass("brewin-collapsed", now);
     });
+  }
+
+  // ── Birthdays ──────────────────────────────────────────────────────────────
+
+  /** How many birthdays fall within the warning window (at least a week) — the menu's count. */
+  private birthdaysSoon(today: string): number {
+    const days = Math.max(7, this.plugin.settings.birthdayRemindDays);
+    return birthdaysBetween(this.plugin.birthdays.getPeople(), today, shiftISO(today, days) ?? today).length;
+  }
+
+  /** Birthdays: the year ahead month by month, then everyone whose note still needs a date. */
+  private renderBirthdays(root: HTMLElement, today: string): void {
+    const everyone = this.plugin.birthdays.getPeople();
+    if (!everyone.length) {
+      root.createDiv({
+        cls: "brewin-empty",
+        text: `No people notes found in ${this.plugin.settings.peopleFolder}. The folder is set under Birthdays in the Planner's settings.`,
+      });
+      return;
+    }
+    const q = this.query.trim().toLowerCase();
+    const page = birthdayPage(q ? everyone.filter((p) => p.name.toLowerCase().includes(q)) : everyone, today);
+
+    if (!page.months.length) {
+      root.createDiv({ cls: "brewin-empty", text: q ? "Nobody by that name has a birthday set." : "No birthdays yet — set one below." });
+    }
+    for (const m of page.months) {
+      const label = root.createDiv({ cls: "brewin-date-label" });
+      label.createSpan({ text: m.label });
+      label.createSpan({ cls: "brewin-count", text: String(m.rows.length) });
+      for (const r of m.rows) {
+        const row = root.createDiv({ cls: "brewin-bday-row" + (r.inDays === 0 ? " is-today" : "") });
+        row.createSpan({ cls: "brewin-bday-date", text: shortDate(r.date) });
+        const main = row.createDiv({ cls: "brewin-bday-main" });
+        const name = main.createSpan({ cls: "brewin-task-link", text: r.person.name });
+        name.addEventListener("click", () => this.openNote(r.person.path));
+        const when = r.inDays === 0 ? "today 🎉" : r.inDays === 1 ? "tomorrow" : r.inDays <= 31 ? `in ${r.inDays} days` : "";
+        const meta = [r.age != null ? `turns ${r.age}` : "", when].filter(Boolean).join(" · ");
+        if (meta) main.createSpan({ cls: "brewin-bday-meta", text: meta });
+        this.iconBtn(row, "✏️", "Change the date", () => this.promptBirthday(r.person));
+      }
+    }
+
+    const listSection = (key: string, title: string, people: Person[], action: string | null, showRaw: boolean) => {
+      if (!people.length) return;
+      const head = this.sectionHeader(root, title, people.length);
+      const body = root.createDiv();
+      this.foldable(head, body, key);
+      for (const p of people) {
+        const row = body.createDiv({ cls: "brewin-bday-row is-missing" });
+        const main = row.createDiv({ cls: "brewin-bday-main" });
+        const name = main.createSpan({ cls: "brewin-task-link", text: p.name });
+        name.addEventListener("click", () => this.openNote(p.path));
+        if (showRaw && p.raw) main.createSpan({ cls: "brewin-bday-meta", text: p.raw });
+        if (action) {
+          const b = row.createEl("button", { cls: "brewin-chip-mini", text: action });
+          b.addEventListener("click", () => this.promptBirthday(p));
+        }
+      }
+    };
+    // What can't be read is a mistake to fix, so it is open; the rest is reference, folded.
+    listSection("bday-unreadable", "⚠️ Can't read the date", page.unreadable, "Fix…", true);
+    listSection("bday-nodate", "No birthday yet", page.noDate, "Set…", false);
+    listSection("bday-hidden", "Hidden — Birthday:: hidden", page.hidden, null, true);
+    listSection("bday-died", "Died", page.died, null, true);
+  }
+
+  /** Ask for a birthday and write it into the person's note, in one consistent format. */
+  private promptBirthday(p: Person): void {
+    new PromptModal(this.app, {
+      title: `Birthday — ${p.name}`,
+      body: "With the year (1990-03-18) or without it (5 November).",
+      placeholder: "5 November",
+      initial: p.dob ? formatBirthDate(p.dob) : p.raw,
+      cta: "Save",
+      onSubmit: async (value) => {
+        const d = parseBirthDate(value);
+        if (!d) {
+          new Notice(`Couldn't read “${value}” as a date — try 1990-03-18 or 5 November.`);
+          return;
+        }
+        await this.plugin.birthdays.setDob(p, formatBirthDate(d));
+        new Notice(`${p.name}: ${formatBirthDate(d)}`);
+        this.render();
+      },
+    }).open();
   }
 
   // ── Views ──────────────────────────────────────────────────────────────────
@@ -1084,34 +1935,269 @@ export class DashboardView extends ItemView {
     }
   }
 
-  /** Projects: checkbox tasks grouped under their project note. */
-  private async renderProjects(root: HTMLElement, today: string): Promise<void> {
+  /**
+   * Projects: each active project with its next action and deadline, then its open work — task
+   * notes, then the checkbox lines in its note. Waiting and Someday projects follow, as names.
+   * A project's name opens it on its own page.
+   */
+  private renderProjects(root: HTMLElement, tasks: Task[], today: string): void {
     const src = new ProjectTaskSource(this.app, this.plugin.settings);
-    const groups = groupByProject(await src.getProjectTasks(true)); // active projects only
-    if (!groups.length) {
-      root.createDiv({ cls: "brewin-empty", text: "No open tasks in your active projects." });
+    const groups = this.activeProjects().map((p) => ({ p, notes: this.projectNotes(tasks, p.path) }));
+    const waiting = this.projects.filter((p) => p.info.status === "waiting");
+    // Someday, and any project whose status HQ wouldn't recognise — parked either way.
+    const parked = this.projects.filter((p) => p.info.status === "someday" || p.info.status === null);
+    if (!groups.length && !waiting.length && !parked.length) {
+      root.createDiv({ cls: "brewin-empty", text: `No projects in ${this.plugin.settings.projectsFolder}.` });
       return;
     }
-    if (this.plugin.settings.projectsLayout === "board") {
+    if (!groups.length) root.createDiv({ cls: "brewin-empty", text: "No active projects." });
+
+    if (groups.length && this.plugin.settings.projectsLayout === "board") {
       const board = root.createDiv({ cls: "brewin-board" });
-      for (const g of groups) {
+      for (const { p, notes } of groups) {
         const col = board.createDiv({ cls: "brewin-board-col" });
         const head = col.createDiv({ cls: "brewin-board-head" });
-        const link = head.createSpan({ cls: "brewin-task-link", text: g.project });
-        link.addEventListener("click", () => this.openNote(g.path));
-        head.createSpan({ cls: "brewin-count", text: String(g.tasks.length) });
+        const link = head.createSpan({ cls: "brewin-task-link", text: p.name });
+        link.addEventListener("click", () => this.go({ project: p.path }));
+        head.createSpan({ cls: "brewin-count", text: String(notes.length + p.inline.length) });
         const body = col.createDiv({ cls: "brewin-board-body" });
-        for (const item of g.tasks) this.projectCard(body, src, item, today);
+        this.projectBrief(body, p, today);
+        for (const t of notes) this.card(body, t, today);
+        for (const item of p.inline) this.projectCard(body, src, item, today);
       }
-      return;
+    } else {
+      for (const { p, notes } of groups) {
+        const label = root.createDiv({ cls: "brewin-date-label brewin-project-label" });
+        const link = label.createSpan({ cls: "brewin-task-link", text: p.name });
+        link.addEventListener("click", () => this.go({ project: p.path }));
+        const n = notes.length + p.inline.length;
+        if (n) label.createSpan({ cls: "brewin-count", text: String(n) });
+        this.projectBrief(root, p, today);
+        for (const t of notes) this.taskRow(root, t);
+        for (const item of p.inline) this.projectRow(root, src, item, today);
+      }
     }
 
-    for (const g of groups) {
-      const label = root.createDiv({ cls: "brewin-date-label brewin-project-label" });
-      const link = label.createSpan({ cls: "brewin-task-link", text: g.project });
-      link.addEventListener("click", () => this.openNote(g.path));
-      label.createSpan({ cls: "brewin-count", text: String(g.tasks.length) });
-      for (const item of g.tasks) this.projectRow(root, src, item, today);
+    const parkedList = (key: string, title: string, list: MenuProject[]) => {
+      if (!list.length) return;
+      const head = this.sectionHeader(root, title, list.length);
+      const body = root.createDiv();
+      this.foldable(head, body, key);
+      for (const p of list) {
+        const row = body.createDiv({ cls: "brewin-proj-row" });
+        const link = row.createSpan({ cls: "brewin-task-link", text: p.name });
+        link.addEventListener("click", () => this.go({ project: p.path }));
+        const meta =
+          p.info.status === "waiting"
+            ? [p.info.waitingOn ? `waiting on ${p.info.waitingOn}` : "waiting", p.info.next ? `then: ${plainText(p.info.next)}` : ""]
+            : [p.info.status === null ? "no status" : "", plainText(p.info.next)];
+        const text = meta.filter(Boolean).join(" · ");
+        if (text) row.createSpan({ cls: "brewin-proj-row-meta", text });
+      }
+    };
+    parkedList("proj-waiting", "⏳ Waiting", waiting);
+    parkedList("proj-someday", "💭 Someday", parked);
+  }
+
+  /**
+   * Under a project's name: its next action (tap to change it, ✓ when it's done), or — when it has
+   * none — what to do about that; and its deadline, when it has one.
+   */
+  private projectBrief(parent: HTMLElement, p: MenuProject, today: string, showDue = true): void {
+    const box = parent.createDiv({ cls: "brewin-proj-brief" });
+    const next = box.createDiv({ cls: "brewin-proj-next" });
+    if (p.info.next) {
+      next.createSpan({ cls: "brewin-proj-next-label", text: "Next" });
+      const text = next.createSpan({ cls: "brewin-proj-next-text", text: plainText(p.info.next) });
+      text.setAttr("role", "button");
+      text.setAttr("aria-label", "Change the next action");
+      text.addEventListener("click", () => this.editNext(p));
+      const done = next.createEl("button", { cls: "brewin-chip-mini", text: "✓ Done" });
+      done.setAttr("aria-label", "The next action is done — choose the one after it");
+      done.addEventListener("click", () => this.advanceNext(p, true));
+    } else {
+      const runners = p.inline.filter((s) => s.isNext).length;
+      const stalled = isStalled(p.info, p.inline);
+      next.addClass(stalled ? "is-stalled" : "is-unset");
+      box.toggleClass("is-stalled", stalled);
+      next.createSpan({
+        cls: "brewin-proj-next-text",
+        text: stalled
+          ? "🚩 No next action"
+          : p.info.status === "active"
+            ? `No next action — ${runners} ⚡ step${runners === 1 ? "" : "s"} ready`
+            : "No next action",
+      });
+      next.createEl("button", { cls: "brewin-chip-mini", text: "Choose…" }).addEventListener("click", () => this.advanceNext(p, false));
+    }
+    const d = showDue ? deadline(p.info, today) : null;
+    if (d) {
+      const due = box.createDiv({ cls: "brewin-proj-due" + (d.overdue ? " is-overdue" : "") });
+      due.setText(`🏁 ${shortDate(d.iso)} · ${deadlineLabel(d)}`);
+      due.setAttr("role", "button");
+      due.setAttr("aria-label", "Change the deadline");
+      due.addEventListener("click", () => this.setProjectDue(p));
+    }
+  }
+
+  /** The top of a project's own page: its status and deadline, what it waits on, and its next action. */
+  private projectHead(root: HTMLElement, p: MenuProject, today: string): void {
+    const head = root.createDiv({ cls: "brewin-proj-head" });
+    const chips = head.createDiv({ cls: "brewin-proj-chips" });
+    const st = p.info.status;
+    const status = chips.createEl("button", {
+      cls: "brewin-proj-status" + (st ? ` is-${st}` : ""),
+      text: st ? `${STATUS_GLYPH[st]} ${STATUS_LABEL[st]}` : "No status",
+    });
+    status.setAttr("aria-label", "Change the project's status");
+    status.addEventListener("click", (ev) => this.statusMenu(ev, p));
+    const d = deadline(p.info, today);
+    const due = chips.createEl("button", {
+      cls: "brewin-proj-status brewin-proj-deadline" + (d?.overdue ? " is-overdue" : ""),
+      text: d ? `🏁 ${shortDate(d.iso)} · ${deadlineLabel(d)}` : "🏁 Add a deadline",
+    });
+    if (!d) due.addClass("is-quiet");
+    due.setAttr("aria-label", d ? "Change the deadline" : "Give the project a deadline");
+    due.addEventListener("click", () => this.setProjectDue(p));
+    if (st === "waiting") {
+      const w = head.createDiv({ cls: "brewin-proj-waiting", text: p.info.waitingOn ? `⏳ Waiting on ${p.info.waitingOn}` : "⏳ Waiting — on what?" });
+      w.setAttr("role", "button");
+      w.addEventListener("click", () => this.changeStatus(p, "waiting"));
+    }
+    // The deadline is a chip above, so the brief below carries only the next action.
+    this.projectBrief(head, p, today, false);
+  }
+
+  private statusMenu(ev: MouseEvent, p: MenuProject): void {
+    const m = new Menu();
+    for (const s of PROJECT_STATUSES) {
+      m.addItem((i) =>
+        i
+          .setTitle(`${STATUS_GLYPH[s]} ${STATUS_LABEL[s]}${s === "waiting" ? "…" : ""}`)
+          .setChecked(p.info.status === s)
+          .onClick(() => this.changeStatus(p, s))
+      );
+    }
+    m.showAtMouseEvent(ev);
+  }
+
+  /** Move a project to another status. Waiting asks on what; done asks first. */
+  private changeStatus(p: MenuProject, status: ProjectStatus): void {
+    const store = this.plugin.projects;
+    if (status === "waiting") {
+      new PromptModal(this.app, {
+        title: `Waiting — ${p.name}`,
+        body: "Who or what is it waiting on?",
+        placeholder: "A reply from the landlord",
+        initial: p.info.waitingOn,
+        cta: "Save",
+        onSubmit: async (value) => {
+          await store.setStatus(p.info, "waiting", value);
+          this.render();
+        },
+      }).open();
+      return;
+    }
+    if (status === p.info.status) return;
+    if (status === "done") {
+      const open = p.inline.length + this.projectNotes(this.plugin.store.getTasks(), p.path).length;
+      new ConfirmModal(this.app, {
+        title: `Mark ${p.name} done?`,
+        body:
+          (open ? `Its ${open} open step${open === 1 ? " stays" : "s stay"} as they are. ` : "") +
+          "It leaves the Planner and moves to Recently done in Project HQ.",
+        cta: "Mark done",
+        onConfirm: async () => {
+          await store.setStatus(p.info, "done");
+          if (this.project === p.path) {
+            this.project = null;
+            this.view = "projects";
+          }
+          new Notice(`✓ ${p.name} is done.`);
+          this.render();
+        },
+      }).open();
+      return;
+    }
+    void store.setStatus(p.info, status).then(() => {
+      new Notice(`${p.name}: ${STATUS_LABEL[status]}`);
+      this.render();
+    });
+  }
+
+  /** Finish the next action and choose the one after it — or, with `done` false, just choose one. */
+  private advanceNext(p: MenuProject, done: boolean): void {
+    const steps = [...p.inline].sort((a, b) => a.line - b.line); // offered in the note's own order
+    new NextActionModal(this.app, {
+      project: p.info,
+      steps,
+      done,
+      onSubmit: async (c) => {
+        await this.plugin.projects.advance(p.info, { done, ...c });
+        new Notice(c.next ? `${p.name} — next: ${plainText(c.next)}` : `${p.name}: no next action yet.`);
+        this.render();
+      },
+    }).open();
+  }
+
+  private editNext(p: MenuProject): void {
+    new PromptModal(this.app, {
+      title: `Next action — ${p.name}`,
+      body: "One physical action. Leave it empty to clear it.",
+      initial: p.info.next,
+      cta: "Save",
+      allowEmpty: true,
+      onSubmit: async (value) => {
+        if (value === p.info.next) return;
+        await this.plugin.projects.setNext(p.info, value);
+        this.render();
+      },
+    }).open();
+  }
+
+  private async setProjectDue(p: MenuProject): Promise<void> {
+    const r = await pickDate(this.app, p.info.due, this.plugin.settings.firstDayOfWeek, { selectedLabel: "Deadline" });
+    if (r === undefined || r === p.info.due) return;
+    await this.plugin.projects.setDue(p.info, r);
+    this.render();
+  }
+
+  /** A project's open task notes, soonest first. */
+  private projectNotes(tasks: Task[], path: string): Task[] {
+    return tasks
+      .filter((t) => t.projectPath === path && isOpen(t))
+      .sort((a, b) => (a.scheduled ?? a.due ?? "9999").localeCompare(b.scheduled ?? b.due ?? "9999") || a.title.localeCompare(b.title));
+  }
+
+  /** One project on its own: its task notes, then the checkbox lines in its note. */
+  private renderProjectScope(root: HTMLElement, tasks: Task[], today: string): void {
+    const p = this.projects.find((x) => x.path === this.project);
+    if (!p) return;
+    this.projectHead(root, p, today);
+    const src = new ProjectTaskSource(this.app, this.plugin.settings);
+    const notes = this.projectNotes(tasks, p.path);
+    // Checkbox lines carry no contexts, so narrowing to a context leaves only the task notes.
+    let lines = this.contextFilter ? [] : p.inline;
+    if (this.query.trim()) lines = search(lines.map((pt) => ({ pt, title: pt.text, contexts: [] as string[] })), this.query).map((h) => h.pt);
+
+    if (!notes.length && !lines.length) {
+      const narrowed = !!this.query.trim() || !!this.contextFilter;
+      root.createDiv({
+        cls: "brewin-empty",
+        text: narrowed ? "Nothing in this project matches." : "Nothing open in this project. Add a task with ＋, or move one here from its ⋯ menu.",
+      });
+      return;
+    }
+    if (notes.length) {
+      this.sectionHeader(root, "📝 Tasks", notes.length);
+      const body = root.createDiv();
+      notes.forEach((t) => this.taskRow(body, t));
+    }
+    if (lines.length) {
+      const head = this.sectionHeader(root, "📄 In the project note", lines.length);
+      head.setAttr("title", "Checkbox lines in the note itself");
+      const body = root.createDiv();
+      lines.forEach((pt) => this.projectRow(body, src, pt, today));
     }
   }
 
@@ -1287,6 +2373,16 @@ export class DashboardView extends ItemView {
       d.setAttr("title", `Due ${task.due}`);
     }
     task.contexts.forEach((c) => meta.createSpan({ cls: "brewin-meta-ctx", text: `@${c}` }));
+    // The project it belongs to — tap to see the rest of that project. Not repeated on the project's own page.
+    if (task.projectPath && task.projectPath !== this.project) {
+      const path = task.projectPath;
+      const chip = meta.createSpan({ cls: "brewin-meta-project", text: `⚡ ${path.split("/").pop()?.replace(/\.md$/, "") ?? path}` });
+      chip.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (this.projects.some((p) => p.path === path)) this.go({ project: path });
+        else this.openNote(path); // not an active project, so it has no page here
+      });
+    }
     // Parent breadcrumb (skip when already shown nested under that parent)
     if (task.parentPath && !isSubtask) {
       const p = this.index.byPath.get(task.parentPath);
@@ -1332,6 +2428,8 @@ export class DashboardView extends ItemView {
       this.iconBtn(actions, "⋯", "More", (ev) => this.rowMenu(ev, task));
     }
     if (triageStrip) row.appendChild(triageStrip);
+    // Beside the menu, a row can be dragged onto it. Not in the drawer: the menu is shut while you drag.
+    if (!this.drawer && !isDone && task.status !== "done") this.makeDraggable(row, task, false);
 
     // Expanded slot list — tick any specific time, not just the next one.
     if (sp && this.expanded.has(task.path)) {
@@ -1389,6 +2487,18 @@ export class DashboardView extends ItemView {
       menu.addItem((i) => i.setTitle("Back to the inbox").setIcon("inbox").onClick(async () => { await this.plugin.store.setStatus(task, "todo"); this.render(); }));
     } else if (!task.recurrence && task.status !== "done") {
       menu.addItem((i) => i.setTitle("Move to Someday").setIcon("cloud").onClick(async () => { await this.plugin.store.setStatus(task, "someday"); this.render(); }));
+    }
+    menu.addItem((i) =>
+      i.setTitle(task.project ? "Move to another project…" : "Move to project…").setIcon("folder-input").onClick(() => {
+        new ProjectSuggestModal(this.app, this.projects.map(({ path, name }) => ({ path, name })), async (p) => {
+          await this.plugin.store.setProject(task, p.path);
+          new Notice(`“${task.title}” is now in ${p.name}.`);
+          this.render();
+        }).open();
+      })
+    );
+    if (task.project) {
+      menu.addItem((i) => i.setTitle("Remove from project").setIcon("folder-minus").onClick(async () => { await this.plugin.store.setProject(task, null); this.render(); }));
     }
     menu.addSeparator();
 
@@ -1463,7 +2573,8 @@ export class DashboardView extends ItemView {
     const main = row.createDiv({ cls: "brewin-task-main" });
     const titleLine = main.createDiv({ cls: "brewin-task-title" });
     if (pt.isNext) titleLine.createSpan({ cls: "brewin-next", text: "⚡ " });
-    titleLine.createSpan({ text: pt.text });
+    // An empty "- [ ]" line in the note still deserves a visible row, or it reads as a stray checkbox.
+    titleLine.createSpan({ cls: pt.text ? "" : "brewin-untitled", text: plainText(pt.text) || "(untitled task)" });
     const meta = main.createDiv({ cls: "brewin-task-meta" });
     if (pt.scheduled) meta.createSpan({ cls: "brewin-meta-sched", text: `📅 ${pt.scheduled}` });
     if (pt.due) {

@@ -24,6 +24,9 @@ import { TemplateSuggestModal } from "./templateSuggestModal";
 import { DEFAULT_TEMPLATE_ICON, PlannerTemplate, templateCommandId } from "./plannerTemplate";
 import { archivable } from "./status";
 import { parseTimes, planIsRest, planSlots, TrainingSource, trainingItems } from "./training";
+import { BirthdayStore } from "./birthdayStore";
+import { ProjectStore } from "./projectStore";
+import { birthdayLabel, birthdaysBetween } from "./birthdays";
 
 /** Heading the weekly-review command fills. Must match `_Template/Weekly Review.md`. */
 const TASK_SECTION_HEADING = "### Tasks this week";
@@ -35,6 +38,8 @@ export default class BrewinTasksPlugin extends Plugin {
   reminders!: ReminderService;
   backlog!: BacklogStore;
   templates!: TemplateStore;
+  birthdays!: BirthdayStore;
+  projects!: ProjectStore;
   private refreshQueued = false;
 
   async onload(): Promise<void> {
@@ -43,6 +48,8 @@ export default class BrewinTasksPlugin extends Plugin {
     this.events = new EventStore(this.app, this.settings);
     this.backlog = new BacklogStore(this.app, this.settings);
     this.templates = new TemplateStore(this.app, this.settings);
+    this.birthdays = new BirthdayStore(this.app, this.settings);
+    this.projects = new ProjectStore(this.app, this.settings);
     this.reminders = new ReminderService(this);
     this.reminders.start();
 
@@ -63,6 +70,16 @@ export default class BrewinTasksPlugin extends Plugin {
       id: "brewin-open-dashboard",
       name: "Open dashboard",
       callback: () => this.activateView(),
+    });
+    this.addCommand({
+      id: "brewin-toggle-dashboard-menu",
+      name: "Toggle the dashboard menu",
+      checkCallback: (checking) => {
+        const view = this.app.workspace.getActiveViewOfType(DashboardView);
+        if (!view) return false;
+        if (!checking) void view.toggleMenu();
+        return true;
+      },
     });
     this.addCommand({
       id: "brewin-edit-active",
@@ -178,9 +195,17 @@ export default class BrewinTasksPlugin extends Plugin {
     // its top, which on a phone is most of the time.
     const onVaultChange = (file: TAbstractFile, oldPath?: string) => {
       if (file.path === this.backlog.notePath) return;
+      // A people note: re-read its birthday first, so the redraw shows the new date.
+      if (this.birthdays.owns(file.path) || (oldPath && this.birthdays.owns(oldPath))) {
+        void this.birthdays.update(file, oldPath).then(() => this.queueRefresh());
+        return;
+      }
       if (!this.isOurs(file.path) && !(oldPath && this.isOurs(oldPath))) return;
       this.queueRefresh();
     };
+    // A project note the Planner just wrote is read from what was written until the cache has it.
+    // Registered first, so the redraw that follows the change reads the cache, not the stale copy.
+    this.registerEvent(this.app.metadataCache.on("changed", (f) => this.projects.forget(f.path)));
     this.registerEvent(this.app.metadataCache.on("changed", (f) => onVaultChange(f)));
     this.registerEvent(this.app.vault.on("create", (f) => onVaultChange(f)));
     this.registerEvent(this.app.vault.on("delete", (f) => onVaultChange(f)));
@@ -200,6 +225,8 @@ export default class BrewinTasksPlugin extends Plugin {
       }
       // Give the metadata cache a moment to finish indexing before deciding what is old enough.
       window.setTimeout(() => void this.fileAwayDoneTasks(), 4000);
+      // Birthdays are read from the people notes' text, once, then kept up to date by the watcher.
+      void this.birthdays.loadAll().then(() => this.refreshViews());
     });
   }
 
@@ -245,6 +272,14 @@ export default class BrewinTasksPlugin extends Plugin {
   // ── Brewin Fitness's plan, on the calendar ────────────────────────────────
 
   /** The Fitness plugin, when it is installed and enabled. */
+  /** Open a sibling Brewin plugin's own view — nothing happens when it isn't installed and enabled. */
+  async openSibling(id: "brewin-habits" | "brewin-fitness"): Promise<void> {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sibling = (this.app as any).plugins?.plugins?.[id];
+    if (id === "brewin-habits") await sibling?.activateHabits?.();
+    else await sibling?.activateDashboard?.();
+  }
+
   private fitness(): any | null {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     return (this.app as any).plugins?.plugins?.["brewin-fitness"] ?? null;
@@ -276,6 +311,23 @@ export default class BrewinTasksPlugin extends Plugin {
     const src = this.trainingSource();
     if (!src) return [];
     return trainingItems(src, fromISO, toISO, parseTimes(this.settings.trainingTimes), this.settings.trainingMinutes);
+  }
+
+  /** Birthdays from the people notes, as all-day calendar items. Tapping one opens the person's note. */
+  birthdayItems(fromISO: string, toISO: string): CalendarItem[] {
+    if (!this.settings.birthdaysOnCalendar) return [];
+    return birthdaysBetween(this.birthdays.getPeople(), fromISO, toISO).map((b) => ({
+      kind: "birthday",
+      path: b.person.path,
+      title: birthdayLabel(b.person.name, b.age),
+      date: b.date,
+      allDay: true,
+      start: null,
+      end: null,
+      done: false,
+      category: "Birthdays",
+      recurring: false,
+    }));
   }
 
   /** Open a training item: the logged session if there is one, else start it in Fitness. */

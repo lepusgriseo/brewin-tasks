@@ -22,6 +22,8 @@ import { buildIndex, childrenOf, validParentCandidates } from "./hierarchy";
 import { validDependencyCandidates } from "./dependencies";
 import { RecurrenceScopeModal } from "./recurrenceScopeModal";
 import { toWikilink } from "./task";
+import { ProjectTaskSource } from "./projectTasks";
+import { ProjectSuggestModal } from "./projectSuggestModal";
 
 /** Create-or-edit a task: title + scheduled/due via date-picker + priority + context + repeat. */
 export class CaptureModal extends Modal {
@@ -66,6 +68,9 @@ export class CaptureModal extends Modal {
   /** Parent wikilink (e.g. `[[Ship v2]]`), or null for a top-level task. */
   private parent: string | null = null;
   private parentTitle: string | null = null;
+  /** Project wikilink (e.g. `[[Smart home]]`), or null when the task belongs to no project. */
+  private project: string | null = null;
+  private projectTitle: string | null = null;
   /** Subtask titles queued for creation on save. */
   private newSubtasks: string[] = [];
   /** Fixed times this task repeats at within a day. */
@@ -118,6 +123,8 @@ export class CaptureModal extends Modal {
       this.times = [...(existing.times ?? [])];
       this.status = existing.status;
       this.parent = existing.parent;
+      this.project = existing.project ?? null;
+      this.projectTitle = existing.projectPath ? existing.projectPath.split("/").pop()?.replace(/\.md$/, "") ?? null : null;
       if (existing.parentPath) {
         this.parentTitle = this.store.getByPath(existing.parentPath)?.title ?? null;
       }
@@ -600,6 +607,31 @@ export class CaptureModal extends Modal {
       addSlot();
     });
 
+    // ── Project ──
+    // For a task NOTE that belongs to a project; the project's own checkbox lines stay in its note.
+    const projectSetting = new Setting(contentEl).setName("Project");
+    const projectBtn = projectSetting.controlEl.createEl("button", { cls: "brewin-chip" });
+    const renderProject = () => {
+      projectBtn.setText(this.projectTitle ? `⚡ ${this.projectTitle}` : "No project");
+      projectBtn.toggleClass("brewin-chip-set", !!this.project);
+    };
+    renderProject();
+    projectBtn.addEventListener("click", () => {
+      const projects = new ProjectTaskSource(this.app, this.settings).listProjects(true);
+      new ProjectSuggestModal(this.app, projects, (picked) => {
+        this.project = toWikilink(picked.name);
+        this.projectTitle = picked.name;
+        renderProject();
+      }).open();
+    });
+    projectSetting.addExtraButton((b) =>
+      b.setIcon("x").setTooltip("No project").onClick(() => {
+        this.project = null;
+        this.projectTitle = null;
+        renderProject();
+      })
+    );
+
     // ── Parent task ──
     const parentSetting = new Setting(contentEl).setName("Parent task");
     const parentBtn = parentSetting.controlEl.createEl("button", { cls: "brewin-chip" });
@@ -740,6 +772,7 @@ export class CaptureModal extends Modal {
       !!this.recurrence ||
       this.times.length > 0 ||
       !!this.parent ||
+      !!this.project ||
       this.dependsOn.length > 0 ||
       this.newSubtasks.length > 0 ||
       existingKids.length > 0;
@@ -749,7 +782,7 @@ export class CaptureModal extends Modal {
     const open = uses || CaptureModal.moreOpen;
     const paint = (on: boolean) => {
       more.toggleClass("brewin-collapsed", !on);
-      moreToggle.setText(on ? "Fewer options ▴" : "More options ▾ — repeat, reminder, estimate, parent, subtasks");
+      moreToggle.setText(on ? "Fewer options ▴" : "More options ▾ — repeat, reminder, estimate, project, parent, subtasks");
     };
     paint(open);
     moreToggle.addEventListener("click", () => {
@@ -784,6 +817,20 @@ export class CaptureModal extends Modal {
   }
 
   /** The `remind:` / `remind_start:` pair this control represents. */
+  /**
+   * Start a NEW task inside a project and/or with contexts already on it — what the dashboard
+   * does when you press ＋ while looking at one project or one context. Ignored when editing.
+   */
+  withPreset(p: { project?: { link: string; name: string } | null; contexts?: string[] }): this {
+    if (this.existing) return this;
+    if (p.project) {
+      this.project = p.project.link;
+      this.projectTitle = p.project.name;
+    }
+    if (p.contexts?.length) this.contexts = [...new Set([...this.contexts, ...p.contexts])];
+    return this;
+  }
+
   /** Offer the template library here. Chainable, so the constructor's call sites are untouched. */
   withTemplateLibrary(store: TemplateStore): this {
     this.templateLib = store;
@@ -950,6 +997,7 @@ export class CaptureModal extends Modal {
           priority: this.priority,
           contexts: this.contexts,
           parent: this.parent,
+          project: this.project,
           recurrence,
           recurrenceAnchor: "scheduled" as const,
           endDate: this.endDate,
@@ -1022,6 +1070,7 @@ export class CaptureModal extends Modal {
         status: this.status,
         contexts: this.contexts,
         parent: this.parent,
+        project: this.project,
         recurrence,
         recurrenceAnchor: "scheduled",
         endDate: this.endDate,
@@ -1054,6 +1103,7 @@ export class CaptureModal extends Modal {
         recurrence,
         recurrenceAnchor: "scheduled" as const,
         parent: this.parent,
+        project: this.project,
         endDate: this.endDate,
         estimate: this.estimate,
         ...this.remindFields(),
