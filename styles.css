@@ -1692,3 +1692,114 @@ body.is-phone .brewin-next-modal button.brewin-next-step { min-height: 44px; }
 .brewin-status-builtins { margin: 0.2em 0 0.8em; padding-left: 1.2em; }
 .brewin-flag-setting .setting-item-control { flex-wrap: wrap; justify-content: flex-end; }
 .brewin-flag-setting input.brewin-flag-icon { width: 3.2em; text-align: center; }
+
+/* 1.58 — the focus timer. */
+.brewin-meta-spent { color: var(--text-muted); white-space: nowrap; }
+.brewin-meta-timing {
+  color: var(--text-on-accent);
+  background: var(--interactive-accent);
+  border-radius: 999px;
+  padding: 0 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.brewin-capture-buttons .brewin-capture-focus { margin-right: auto; }
+
+.brewin-focus-modal { width: min(460px, 100vw); }
+.brewin-focus { display: flex; flex-direction: column; gap: 10px; }
+.brewin-focus-kicker { color: var(--text-muted); font-size: var(--font-ui-small); letter-spacing: 0.02em; }
+.brewin-focus .brewin-focus-title { margin: 0; font-size: 1.35em; line-height: 1.25; cursor: pointer; }
+.brewin-focus-meta { color: var(--text-muted); font-size: var(--font-ui-small); }
+.brewin-focus-clock {
+  font-size: 3.2em;
+  font-weight: 600;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--text-faint);
+  margin: 6px 0 0;
+}
+.brewin-focus-clock.is-running { color: var(--text-normal); }
+.brewin-focus-state { text-align: center; color: var(--text-muted); font-size: var(--font-ui-small); }
+.brewin-focus-actions { display: flex; gap: 10px; justify-content: center; margin: 4px 0; }
+.brewin-focus-actions .brewin-focus-btn { min-width: 8em; }
+.brewin-focus-note { color: var(--text-warning); font-size: var(--font-ui-small); text-align: center; }
+.brewin-focus-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.brewin-focus-stat { background: var(--background-secondary); border-radius: 8px; padding: 8px; text-align: center; }
+.brewin-focus-stat-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.brewin-focus-stat-label { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.brewin-focus-bar { height: 8px; border-radius: 999px; background: var(--background-modifier-border); overflow: hidden; }
+.brewin-focus-bar-fill { height: 100%; background: var(--interactive-accent); border-radius: 999px; }
+.brewin-focus-estimate.is-over .brewin-focus-bar-fill { background: var(--color-orange); }
+.brewin-focus-estimate-text { color: var(--text-muted); font-size: var(--font-ui-small); margin-top: 4px; }
+.brewin-focus-sessions-head { display: flex; align-items: center; justify-content: space-between; font-weight: 600; margin-top: 4px; }
+.brewin-focus-session {
+  display: grid;
+  grid-template-columns: 6.5em 1fr auto auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-variant-numeric: tabular-nums;
+}
+.brewin-focus-session-day { color: var(--text-muted); }
+.brewin-focus-session-len { font-weight: 600; }
+.brewin-focus-empty { color: var(--text-muted); font-size: var(--font-ui-small); }
+.brewin-focus-more { align-self: flex-start; }
+.brewin-focus-foot { display: flex; justify-content: flex-end; gap: 8px; }
+.brewin-focus-leave p { color: var(--text-muted); }
+
+/* The floating timer: over the workspace, under any window that opens. */
+.brewin-float-timer {
+  position: fixed;
+  right: 16px;
+  bottom: 40px;
+  z-index: var(--layer-popover);
+  display: flex;
+  align-items: stretch;
+  max-width: min(360px, calc(100vw - 32px));
+  border-radius: 999px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  box-shadow: var(--shadow-l);
+  overflow: hidden;
+}
+.brewin-float-timer button.brewin-float-main,
+.brewin-float-timer button.brewin-float-pause {
+  background: transparent;
+  box-shadow: none;
+  border: none;
+  border-radius: 0;
+  height: auto;
+  min-height: 36px;
+  color: var(--text-normal);
+}
+.brewin-float-timer .brewin-float-main { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 0 6px 0 14px; }
+.brewin-float-clock { font-weight: 600; font-variant-numeric: tabular-nums; }
+.brewin-float-title { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.brewin-float-go { color: var(--text-accent); }
+.brewin-float-timer .brewin-float-pause { padding: 0 14px; border-left: 1px solid var(--background-modifier-border); }
+.brewin-float-timer button:hover { background: var(--background-modifier-hover); }
+
+/* On a phone it sits bottom-left, leaving the corner to the dashboard's ＋ button. */
+body.is-phone .brewin-float-timer {
+  right: auto;
+  left: 16px;
+  max-width: calc(100vw - 104px);
+  bottom: calc(var(--brewin-planner-navbar-room, 0px) + 16px);
+}
+body.is-phone .brewin-float-timer button.brewin-float-main,
+body.is-phone .brewin-float-timer button.brewin-float-pause { min-height: 44px; font-size: 16px; }
+body.is-phone .brewin-focus-actions .brewin-focus-btn { min-height: 48px; font-size: 16px; flex: 1; }
+body.is-phone .brewin-focus-session { grid-template-columns: 5.5em 1fr auto auto auto; }
+body.is-phone .brewin-focus-icon { min-width: 40px; min-height: 40px; }
+
+/* 1.59 — attributes of the user's own. */
+.brewin-meta-attr { color: var(--text-muted); white-space: nowrap; cursor: pointer; }
+.brewin-meta-attr:hover { color: var(--text-normal); }
+.brewin-attrs { margin-top: 4px; }
+.brewin-attrs-head { font-weight: 600; font-size: var(--font-ui-small); color: var(--text-muted); margin: 10px 0 2px; text-transform: none; }
+.brewin-attrs .brewin-attr-row { padding: 6px 0; }
+.brewin-attrs-add { margin: 6px 0 4px; }
+.brewin-attr-modal input.brewin-attr-icon { width: 4em; text-align: center; }
+body.is-phone .brewin-attrs-add { min-height: 44px; font-size: 16px; }

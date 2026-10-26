@@ -8,6 +8,8 @@
 export interface Searchable {
   title: string;
   contexts: string[];
+  /** The user's own attribute values (text, choices, links, numbers) — they count like a context. */
+  attrs?: Record<string, string | number | boolean>;
 }
 
 /** Where a query matched, best first. Higher scores are better matches. */
@@ -68,6 +70,8 @@ export function scoreMatch(item: Searchable, rawQuery: string): number | null {
 
   // A context match counts, but never outranks a title match.
   if (item.contexts.some((c) => c.toLowerCase().includes(q))) bump(CONTEXT_MATCH);
+  // So does an attribute's value: "kitchen" finds Room: Kitchen, "mum" finds Client: [[Mum]].
+  if (Object.values(item.attrs ?? {}).some((v) => typeof v !== "boolean" && String(v).toLowerCase().includes(q))) bump(CONTEXT_MATCH);
 
   if (best == null) return null;
   // Among equal-quality matches, prefer the shorter title — it's the more specific one.

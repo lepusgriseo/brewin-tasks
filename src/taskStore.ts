@@ -11,6 +11,7 @@ import { hasContext } from "./contexts";
 import type { EditScope } from "./recurrenceScopeModal";
 import { Priority, Status, Task, TaskSlot } from "./types";
 import { flagRefusal, flagToWrite, StatusFlag } from "./statusFlags";
+import { attrToFrontmatter, AttrValue } from "./attributes";
 
 export interface NewTaskFields {
   title: string;
@@ -71,7 +72,7 @@ export class TaskStore {
       const fm = (cache?.frontmatter ?? {}) as Record<string, unknown>;
       const tags = collectTags(fm, cache);
       if (!tags.includes(TASK_TAG)) continue;
-      const task = taskFromFrontmatter(fm, file.path, file.basename, this.settings.statusFlags);
+      const task = taskFromFrontmatter(fm, file.path, file.basename, this.settings.statusFlags, this.settings.attributes);
       task.parentPath = this.resolveParentPath(task.parent, file.path);
       task.dependsOnPaths = this.resolveLinkPaths(task.dependsOn, file.path);
       task.projectPath = this.resolveParentPath(task.project, file.path);
@@ -666,6 +667,25 @@ export class TaskStore {
     }
     await this.persist(withStatus(task, flag.base, flag));
     return null;
+  }
+
+  /**
+   * Set the user's own attributes on a task: a value per key, null to clear it. Attributes are
+   * frontmatter properties nothing else in the Planner writes, so this touches only those keys.
+   */
+  async setAttrs(path: string, values: Record<string, AttrValue | null>): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile) || !Object.keys(values).length) return;
+    const defs = new Map(this.settings.attributes.map((a) => [a.key, a]));
+    await this.app.fileManager.processFrontMatter(file, (fm) => {
+      for (const [key, v] of Object.entries(values)) {
+        const attr = defs.get(key);
+        if (!attr) continue;
+        if (v === null) delete fm[key];
+        else fm[key] = attrToFrontmatter(attr, v);
+      }
+      fm.modified = todayISO();
+    });
   }
 
   /** Take a task's flag off, leaving its status as it is. */

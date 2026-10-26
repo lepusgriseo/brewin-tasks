@@ -7,9 +7,10 @@ import { hasContext } from "./contexts";
 import { shiftISO } from "./dates";
 import { Task } from "./types";
 import { flagRefusal, StatusFlag } from "./statusFlags";
+import { parseAttrInput, TaskAttribute } from "./attributes";
 
 /** The menu's groups, top to bottom. Each can be folded, or hidden from the menu altogether. */
-export type MenuSection = "progress" | "projects" | "contexts" | "statuses" | "filters" | "links";
+export type MenuSection = "progress" | "projects" | "contexts" | "statuses" | "filters" | "links" | `attr:${string}`;
 
 /**
  * Entries are addressed by key so one hidden-list covers every kind: `view:today`,
@@ -20,6 +21,8 @@ export const sectionKey = (id: MenuSection): string => `section:${id}`;
 export const projectKey = (path: string): string => `project:${path}`;
 export const contextKey = (value: string): string => `context:${value.toLowerCase()}`;
 export const flagKey = (id: string): string => `flag:${id}`;
+/** One value of one of the user's attributes, as a menu entry: `attrval:energy=high`. */
+export const attrValueKey = (key: string, value: string): string => `attrval:${key}=${value}`;
 
 /**
  * The views in the user's order. A saved order may predate a view (or name one that has since
@@ -95,6 +98,9 @@ export function linkedTaskCounts(tasks: Pick<Task, "status" | "projectPath">[]):
 
 // ── Saved filters ─────────────────────────────────────────────────────────────
 
+/** How All is grouped: by date, by context, or by one of the user's attributes (`attr:<key>`). */
+export type GroupBy = "date" | "context" | `attr:${string}`;
+
 /** What the dashboard is showing: a view (or one project) narrowed by a context and a search. */
 export interface DashState {
   view: DashView;
@@ -103,8 +109,10 @@ export interface DashState {
   context: string | null;
   /** A status flag's id: only tasks carrying it. Absent from filters saved before 1.57. */
   flag?: string | null;
+  /** One of the user's attributes and a value (`attrMatches`): only tasks with it. 1.59 on. */
+  attr?: { key: string; value: string } | null;
   query: string;
-  groupBy: "date" | "context";
+  groupBy: GroupBy;
 }
 
 /** A dashboard state kept under a name, to come back to in one tap. */
@@ -121,17 +129,19 @@ export function matchesFilter(f: DashState, s: DashState): boolean {
   if (f.view !== s.view || (f.project ?? null) !== (s.project ?? null)) return false;
   if ((f.context ?? "").toLowerCase() !== (s.context ?? "").toLowerCase()) return false;
   if ((f.flag ?? null) !== (s.flag ?? null)) return false;
+  if ((f.attr?.key ?? null) !== (s.attr?.key ?? null) || (f.attr?.value ?? null) !== (s.attr?.value ?? null)) return false;
   if (f.query.trim().toLowerCase() !== s.query.trim().toLowerCase()) return false;
   if (!s.project && s.view === "all" && f.groupBy !== s.groupBy) return false;
   return true;
 }
 
 /** A name to offer when saving: the view (or project), then the context, the flag and the search. */
-export function suggestFilterName(s: DashState, projectName: string | null, flagLabel: string | null = null): string {
+export function suggestFilterName(s: DashState, projectName: string | null, flagLabel: string | null = null, attrLabel: string | null = null): string {
   const base = s.project ? projectName ?? "Project" : DASH_VIEWS.find((v) => v.id === s.view)?.label ?? s.view;
   const parts = [base];
   if (s.context) parts.push(`@${s.context}`);
   if (s.flag) parts.push(flagLabel ?? s.flag);
+  if (s.attr) parts.push(attrLabel ?? `${s.attr.key}: ${s.attr.value}`);
   if (s.query.trim()) parts.push(`“${s.query.trim()}”`);
   if (!s.project && s.view === "all" && s.groupBy === "context") parts.push("by context");
   return parts.join(" · ");
@@ -164,9 +174,10 @@ export type DropAction =
   | { kind: "context"; value: string }
   | { kind: "project"; path: string }
   | { kind: "flag"; flag: StatusFlag }
+  | { kind: "attr"; attr: TaskAttribute; value: string }
   | { kind: "refuse"; reason: string };
 
-type DropTask = Pick<Task, "status" | "scheduled" | "recurrence" | "contexts" | "flag"> & { projectPath?: string | null };
+type DropTask = Pick<Task, "status" | "scheduled" | "recurrence" | "contexts" | "flag" | "attrs"> & { projectPath?: string | null };
 
 /**
  * What a task dropped on a menu entry should become. `null` means the entry is not a drop
@@ -175,7 +186,14 @@ type DropTask = Pick<Task, "status" | "scheduled" | "recurrence" | "contexts" | 
  * A recurring task's dates belong to its rule, so the date targets refuse it — the same reason
  * the week board won't let one be dragged. Giving it a context or a project is fine.
  */
-export function resolveDrop(key: string, task: DropTask, today: string, firstDayOfWeek: number, flags: readonly StatusFlag[] = []): DropAction | null {
+export function resolveDrop(
+  key: string,
+  task: DropTask,
+  today: string,
+  firstDayOfWeek: number,
+  flags: readonly StatusFlag[] = [],
+  attributes: readonly TaskAttribute[] = []
+): DropAction | null {
   const dated = (iso: string): DropAction => {
     if (task.recurrence) return { kind: "refuse", reason: "repeats on its own schedule" };
     if (task.scheduled === iso && task.status === "todo") return { kind: "refuse", reason: "is already scheduled then" };
@@ -211,6 +229,18 @@ export function resolveDrop(key: string, task: DropTask, today: string, firstDay
     if (!flag) return null;
     const reason = flagRefusal(task, flag);
     return reason ? { kind: "refuse", reason } : { kind: "flag", flag };
+  }
+  if (key.startsWith("attrval:")) {
+    // Dropping on a value sets it. "Has one" (numbers, dates) is a list to look at, not a value to give.
+    const [attrKey, ...rest] = key.slice("attrval:".length).split("=");
+    const value = rest.join("=");
+    const attr = attributes.find((a) => a.key === attrKey);
+    if (!attr || value === "any" || attr.kind === "number" || attr.kind === "date") return null;
+    const current = task.attrs?.[attr.key];
+    const wanted = attr.kind === "bool" ? true : parseAttrInput(attr, value);
+    if (wanted === null) return null;
+    if (current !== undefined && String(current).toLowerCase() === String(wanted).toLowerCase()) return { kind: "refuse", reason: `already has ${attr.label}` };
+    return { kind: "attr", attr, value };
   }
   return null;
 }

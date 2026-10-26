@@ -5,6 +5,8 @@ import { BUILTIN_STATUSES, FLAG_SUGGESTIONS, flagText, moveFlag, StatusFlag, uni
 import { ConfirmModal } from "./confirmModal";
 import { PromptModal } from "./promptModal";
 import type { Status } from "./types";
+import { ATTR_KINDS, TaskAttribute } from "./attributes";
+import { AttributeModal } from "./attributeModal";
 import type BrewinTasksPlugin from "./main";
 
 export interface Category {
@@ -127,6 +129,20 @@ export interface BrewinSettings {
   /** Status flags, in menu order. Each stands for a built-in status — see `statusFlags.ts`. */
   statusFlags: StatusFlag[];
 
+  // ── 1.58: the focus timer ───────────────────────────────────────────────────
+  /** Each focus session also becomes a calendar event. */
+  timerToCalendar: boolean;
+  /** The event category (a subfolder of the events folder) focus sessions are filed under. */
+  timerCategory: string;
+  /** Closing a focus window while its clock runs asks first. */
+  timerConfirmLeave: boolean;
+  /** While a clock runs and its window is shut, a small timer floats over the workspace. */
+  timerFloating: boolean;
+
+  // ── 1.59: attributes of the user's own ─────────────────────────────────────
+  /** Made from the task window; one frontmatter property each — see `attributes.ts`. */
+  attributes: TaskAttribute[];
+
   // ── 1.53: birthdays, from the people notes ─────────────────────────────────
   /** Where the people notes are; each one's `DOB::` line is its birthday. */
   peopleFolder: string;
@@ -193,6 +209,11 @@ export const DEFAULT_SETTINGS: BrewinSettings = {
   menuFolded: [],
   savedFilters: [],
   statusFlags: [],
+  timerToCalendar: true,
+  timerCategory: "Focus",
+  timerConfirmLeave: true,
+  timerFloating: true,
+  attributes: [],
   peopleFolder: "04_Areas/People",
   birthdaysOnCalendar: true,
   birthdayReminders: true,
@@ -407,6 +428,8 @@ export class BrewinSettingTab extends PluginSettingTab {
       );
 
     this.displayStatusFlags(containerEl);
+    this.displayTimer(containerEl);
+    this.displayAttributes(containerEl);
 
     containerEl.createEl("h3", { text: "Birthdays" });
     new Setting(containerEl)
@@ -908,5 +931,157 @@ export class BrewinSettingTab extends PluginSettingTab {
       const row = new Setting(containerEl).setName("Or start from one of these").setDesc(ideas.map((f) => `${flagText(f)} acts as ${baseLabel(f.base)}`).join(" · "));
       for (const f of ideas) row.addButton((b) => b.setButtonText(`＋ ${flagText(f)}`).onClick(() => add({ ...f })));
     }
+  }
+
+  // ── The focus timer ──────────────────────────────────────────────────────────
+
+  private displayTimer(containerEl: HTMLElement): void {
+    const s = this.plugin.settings;
+    const save = async () => {
+      await this.plugin.saveSettings();
+      this.plugin.refreshViews();
+    };
+    containerEl.createEl("h3", { text: "Focus timer" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "⏱ on a task opens its focus window: a clock you start, pause and finish, the time logged against the " +
+        "estimate, and every session. Sessions are saved on the task note (time_log, time_spent).",
+    });
+    new Setting(containerEl)
+      .setName("Ask before leaving a running timer")
+      .setDesc("Closing the focus window while its clock runs asks whether to stay. Leaving never stops the clock.")
+      .addToggle((t) => t.setValue(s.timerConfirmLeave).onChange(async (v) => { s.timerConfirmLeave = v; await save(); }));
+    new Setting(containerEl)
+      .setName("Floating timer")
+      .setDesc("While a clock runs and its window is shut, a small timer stays on screen, over any note. Tap it to go back.")
+      .addToggle((t) => t.setValue(s.timerFloating).onChange(async (v) => { s.timerFloating = v; await save(); this.plugin.floating?.update(); }));
+    new Setting(containerEl)
+      .setName("Add sessions to the calendar")
+      .setDesc("Each session also becomes an event, so the Calendar shows when you worked and the Time report counts it.")
+      .addToggle((t) => t.setValue(s.timerToCalendar).onChange(async (v) => { s.timerToCalendar = v; await save(); }));
+    new Setting(containerEl)
+      .setName("Calendar category")
+      .setDesc("The event category sessions are filed under — its own folder of the events folder, and its own colour.")
+      .addText((t) =>
+        t.setPlaceholder("Focus").setValue(s.timerCategory).onChange(async (v) => {
+          s.timerCategory = v.trim() || "Focus";
+          await save();
+        })
+      );
+  }
+
+  // ── Attributes of the user's own ─────────────────────────────────────────────
+
+  private displayAttributes(containerEl: HTMLElement): void {
+    const settings = this.plugin.settings;
+    const save = async () => {
+      await this.plugin.saveSettings();
+      this.plugin.refreshViews();
+    };
+    containerEl.createEl("h3", { text: "Attributes" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Your own fields on tasks — a cost, a client, a room. Make one with “＋ Add attribute…” in any task's window or " +
+        "here; each is a property on the task's note, filled in from the task window, shown on rows if you like, listed " +
+        "in the dashboard menu to filter by (drop a task on a value to set it), a way to group All, and found by search.",
+    });
+    const tasks = this.plugin.store.getTasks();
+    settings.attributes.forEach((attr, idx) => {
+      const using = tasks.filter((t) => t.attrs?.[attr.key] !== undefined).length;
+      const kind = ATTR_KINDS.find((k) => k.kind === attr.kind)!;
+      const row = new Setting(containerEl)
+        .setName(`${attr.icon} ${attr.label}`)
+        .setDesc(`${kind.label} · saved as ${attr.key}: · ${using ? `${using} task${using === 1 ? "" : "s"}` : "no tasks yet"}`);
+      row.settingEl.addClass("brewin-flag-setting");
+      row.addText((t) => {
+        t.inputEl.addClass("brewin-flag-icon");
+        t.inputEl.setAttr("aria-label", "Icon");
+        t.setValue(attr.icon).onChange(async (v) => {
+          attr.icon = v.trim() || kind.icon;
+          row.setName(`${attr.icon} ${attr.label}`);
+          await save();
+        });
+      });
+      row.addText((t) => {
+        t.inputEl.setAttr("aria-label", "Name");
+        t.setValue(attr.label).onChange(async (v) => {
+          attr.label = v.trim() || attr.key;
+          row.setName(`${attr.icon} ${attr.label}`);
+          await save();
+        });
+      });
+      if (attr.kind === "number")
+        row.addText((t) => {
+          t.inputEl.addClass("brewin-flag-icon");
+          t.inputEl.setAttr("aria-label", "Unit");
+          t.setPlaceholder("unit").setValue(attr.unit ?? "").onChange(async (v) => {
+            attr.unit = v.trim() || undefined;
+            await save();
+          });
+        });
+      if (attr.kind === "choice")
+        row.addText((t) => {
+          t.inputEl.setAttr("aria-label", "Choices, separated by commas");
+          t.setPlaceholder("choices, comma separated").setValue((attr.options ?? []).join(", ")).onChange(async (v) => {
+            attr.options = [...new Set(v.split(",").map((o) => o.trim()).filter(Boolean))];
+            await save();
+          });
+        });
+      row.addToggle((t) => {
+        t.setTooltip("Show on task rows");
+        t.setValue(attr.onRow).onChange(async (v) => {
+          attr.onRow = v;
+          await save();
+        });
+      });
+      row.addExtraButton((b) =>
+        b.setIcon("arrow-up").setTooltip("Move up").setDisabled(idx === 0).onClick(async () => {
+          const list = settings.attributes;
+          [list[idx - 1], list[idx]] = [list[idx], list[idx - 1]];
+          await save();
+          this.display();
+        })
+      );
+      row.addExtraButton((b) =>
+        b.setIcon("arrow-down").setTooltip("Move down").setDisabled(idx === settings.attributes.length - 1).onClick(async () => {
+          const list = settings.attributes;
+          [list[idx + 1], list[idx]] = [list[idx], list[idx + 1]];
+          await save();
+          this.display();
+        })
+      );
+      row.addExtraButton((b) =>
+        b.setIcon("trash").setTooltip("Remove this attribute").onClick(() => {
+          const remove = async () => {
+            settings.attributes = settings.attributes.filter((a) => a.key !== attr.key);
+            settings.savedFilters = settings.savedFilters.map((f) => (f.attr?.key === attr.key ? { ...f, attr: null } : f));
+            settings.menuHidden = settings.menuHidden.filter((k) => !k.startsWith(`attrval:${attr.key}=`) && k !== `section:attr:${attr.key}`);
+            await save();
+            this.display();
+          };
+          if (!using) return void remove();
+          new ConfirmModal(this.app, {
+            title: `Remove ${attr.icon} ${attr.label}?`,
+            body: `${using} task${using === 1 ? " has" : "s have"} a value. The values stay in the notes, as the property “${attr.key}”, but the Planner stops showing and offering it. Adding an attribute with the same name later brings them back.`,
+            cta: "Remove",
+            onConfirm: () => void remove(),
+          }).open();
+        })
+      );
+    });
+    new Setting(containerEl).addButton((b) =>
+      b
+        .setButtonText("＋ Add attribute")
+        .setCta()
+        .onClick(() =>
+          new AttributeModal(this.app, settings.attributes, async (attr) => {
+            settings.attributes.push(attr);
+            await save();
+            this.display();
+          }).open()
+        )
+    );
   }
 }

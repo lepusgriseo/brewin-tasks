@@ -6,6 +6,7 @@
 import { classify } from "./buckets";
 import { sortItems } from "./calendarItem";
 import { deadline, isStalled, ProjectInfo } from "./projects";
+import { trackedInRange } from "./timeTrack";
 import { CalendarItem, Task } from "./types";
 import { weekTaskReview, WeekTaskReview } from "./views";
 
@@ -29,6 +30,8 @@ export interface DayBrief {
   stalled: { path: string; name: string }[];
   /** Today only: projects with a deadline within `soonDays`, or already past it. */
   deadlines: { path: string; name: string; due: string; days: number; overdue: boolean }[];
+  /** Focus-timer time per task that day, most first. */
+  tracked: { path: string; title: string; minutes: number }[];
 }
 
 /** How far ahead a project deadline counts as close. */
@@ -67,5 +70,6 @@ export function dayBrief(o: {
           .sort((a, b) => a.name.localeCompare(b.name))
       : [],
     deadlines,
+    tracked: trackedInRange(o.tasks, o.date, o.date),
   };
 }

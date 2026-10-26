@@ -3,6 +3,9 @@ import { pickDate } from "./datePicker";
 import { addDays, addMinutesHM, formatHM, formatISO, minutesOfDay, todayISO, todayUTC } from "./dates";
 import { Priority, Status, Task, TaskSlot } from "./types";
 import { BUILTIN_STATUSES, flagRefusal, flagText, StatusFlag } from "./statusFlags";
+import { AttrValue, linkName, parseAttrInput, TaskAttribute } from "./attributes";
+import { AttributeModal } from "./attributeModal";
+import { TripSuggestModal } from "./tripSuggestModal";
 import { TaskStore } from "./taskStore";
 import { BrewinSettings } from "./settings";
 import { RECUR_PRESETS } from "./recurrencePresets";
@@ -30,6 +33,13 @@ import { ProjectSuggestModal } from "./projectSuggestModal";
 export class CaptureModal extends Modal {
   /** Whether "More options" was last left open — remembered for the session. */
   private static moreOpen = false;
+  /** Opens a task's focus window — set by the plugin, which owns the timer. */
+  static openFocus: ((path: string) => void) | null = null;
+  /** Saves settings (a new attribute, a new choice) and redraws the Planner — set by the plugin. */
+  static saveSettings: (() => Promise<void>) | null = null;
+  /** The user's own attributes on this task: current values, and which ones were changed here. */
+  private attrValues: Record<string, AttrValue | null> = {};
+  private attrTouched = new Set<string>();
   private title = "";
   private scheduled: string | null = null;
   private due: string | null = null;
@@ -126,6 +136,7 @@ export class CaptureModal extends Modal {
       this.times = [...(existing.times ?? [])];
       this.status = existing.status;
       this.flag = existing.flag ?? null;
+      this.attrValues = { ...(existing.attrs ?? {}) };
       this.parent = existing.parent;
       this.project = existing.project ?? null;
       this.projectTitle = existing.projectPath ? existing.projectPath.split("/").pop()?.replace(/\.md$/, "") ?? null : null;
@@ -342,6 +353,9 @@ export class CaptureModal extends Modal {
         });
       });
     }
+
+    // Attributes of the user's own — every one they have made, and "＋ Add attribute…" for another.
+    this.renderAttrs(contentEl.createDiv({ cls: "brewin-attrs" }));
 
 
     const advA = contentEl.childElementCount;
@@ -806,6 +820,12 @@ export class CaptureModal extends Modal {
       del.setAttr("aria-label", "Delete task");
       del.addEventListener("click", () => this.deleteTask());
     }
+    // An existing task's focus window, on top of this one: closing it comes back here.
+    const existing = this.existing;
+    if (existing && CaptureModal.openFocus) {
+      const focus = btns.createEl("button", { text: "⏱ Focus timer", cls: "brewin-capture-focus" });
+      focus.addEventListener("click", () => CaptureModal.openFocus?.(existing.path));
+    }
     btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
     if (this.existing) {
       btns.createEl("button", { text: "Open note" }).addEventListener("click", () => this.openNote());
@@ -1028,6 +1048,7 @@ export class CaptureModal extends Modal {
               }
               const movedPath = await this.store.applyRecurringEdit(target, occ, "all", fields);
               if (movedPath !== target.path) target = { ...target, path: movedPath };
+              await this.saveAttrs(target.path);
               const bodyChanged = this.notes.trim() !== this.originalBody.trim();
               if (titleChanged || bodyChanged) {
                 await this.store.setBody(target, this.notes, titleChanged ? title : undefined);
@@ -1089,6 +1110,7 @@ export class CaptureModal extends Modal {
         dependsOn,
       });
       if (movedPath !== target.path) target = { ...target, path: movedPath };
+      await this.saveAttrs(target.path);
 
       // Only touch the file body when something actually changed — opening a task and
       // saving it unchanged must not rewrite the note.
@@ -1120,15 +1142,116 @@ export class CaptureModal extends Modal {
         dependsOn,
       };
       if (this.newSubtasks.length) {
-        await this.store.createWithSubtasks(fields, this.newSubtasks);
+        const file = await this.store.createWithSubtasks(fields, this.newSubtasks);
+        await this.saveAttrs(file.path);
         new Notice(`Added: ${title} + ${this.newSubtasks.length} subtask${this.newSubtasks.length === 1 ? "" : "s"}`);
       } else {
-        await this.store.createTask(fields);
+        const file = await this.store.createTask(fields);
+        await this.saveAttrs(file.path);
         new Notice(`Added: ${title}`);
       }
     }
     this.onCreated();
     this.close();
+  }
+
+  /** Write the attribute values changed in this window — only those, so nothing else is rewritten. */
+  private async saveAttrs(path: string): Promise<void> {
+    const changes: Record<string, AttrValue | null> = {};
+    for (const key of this.attrTouched) changes[key] = this.attrValues[key] ?? null;
+    await this.store.setAttrs(path, changes);
+  }
+
+  /** The "Your attributes" rows: one control per attribute, by its kind. */
+  private renderAttrs(host: HTMLElement): void {
+    host.empty();
+    const attrs = this.settings.attributes;
+    if (attrs.length) host.createDiv({ cls: "brewin-attrs-head", text: "Your attributes" });
+    for (const a of attrs) this.attrRow(host, a);
+    const add = host.createEl("button", { cls: "brewin-attrs-add", text: "＋ Add attribute…" });
+    add.addEventListener("click", () =>
+      new AttributeModal(this.app, attrs, async (attr) => {
+        this.settings.attributes.push(attr);
+        await CaptureModal.saveSettings?.();
+        new Notice(`“${attr.label}” added — every task now offers it.`);
+        this.renderAttrs(host);
+      }).open()
+    );
+  }
+
+  private attrRow(host: HTMLElement, a: TaskAttribute): void {
+    const row = new Setting(host).setName(`${a.icon} ${a.label}`);
+    row.settingEl.addClass("brewin-attr-row");
+    const cur = this.attrValues[a.key] ?? null;
+    const set = (v: AttrValue | null) => {
+      this.attrValues[a.key] = v;
+      this.attrTouched.add(a.key);
+    };
+    switch (a.kind) {
+      case "bool":
+        row.addToggle((t) => t.setValue(cur === true).onChange((v) => set(v ? true : null)));
+        break;
+      case "choice":
+        row.addDropdown((d) => {
+          const opts = a.options ?? [];
+          d.addOption("", "—");
+          for (const o of opts) d.addOption(o, o);
+          if (cur !== null && !opts.includes(String(cur))) d.addOption(String(cur), String(cur));
+          d.addOption("\u0000new", "＋ New choice…");
+          d.setValue(cur === null ? "" : String(cur)).onChange((v) => {
+            if (v !== "\u0000new") return set(v || null);
+            d.setValue(cur === null ? "" : String(cur));
+            new PromptModal(this.app, {
+              title: `A new choice for ${a.label}`,
+              placeholder: "very high",
+              cta: "Add",
+              onSubmit: async (text) => {
+                const choice = text.trim();
+                if (!choice) return;
+                if (!(a.options ?? []).includes(choice)) a.options = [...(a.options ?? []), choice];
+                await CaptureModal.saveSettings?.();
+                set(choice);
+                this.renderAttrs(host);
+              },
+            }).open();
+          });
+        });
+        break;
+      case "date":
+        row.addText((t) => {
+          t.inputEl.type = "date";
+          t.setValue(cur === null ? "" : String(cur)).onChange((v) => set(v || null));
+        });
+        break;
+      case "number":
+        row.setDesc(a.unit ? `In ${a.unit}` : "");
+        row.addText((t) => {
+          t.inputEl.inputMode = "decimal";
+          t.setPlaceholder(a.unit ?? "").setValue(cur === null ? "" : String(cur)).onChange((v) => set(parseAttrInput(a, v)));
+        });
+        break;
+      case "link":
+        row.setDesc(cur === null ? "None" : linkName(String(cur)));
+        row.addButton((b) =>
+          b.setButtonText(cur === null ? "Choose…" : "Change…").onClick(() => {
+            const notes = this.app.vault.getMarkdownFiles().sort((x, y) => x.basename.localeCompare(y.basename));
+            new TripSuggestModal(this.app, notes, (file) => {
+              set(`[[${file.basename}]]`);
+              this.renderAttrs(host);
+            }, `${a.label}: choose a note…`).open();
+          })
+        );
+        if (cur !== null)
+          row.addExtraButton((b) =>
+            b.setIcon("x").setTooltip(`Clear ${a.label}`).onClick(() => {
+              set(null);
+              this.renderAttrs(host);
+            })
+          );
+        break;
+      default:
+        row.addText((t) => t.setValue(cur === null ? "" : String(cur)).onChange((v) => set(v.trim() || null)));
+    }
   }
 
   /**

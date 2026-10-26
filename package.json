@@ -1,6 +1,6 @@
 {
   "name": "brewin-tasks",
-  "version": "1.57.0",
+  "version": "1.59.0",
   "description": "First-party personal task manager for Obsidian",
   "main": "main.js",
   "type": "module",

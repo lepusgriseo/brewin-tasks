@@ -30,6 +30,9 @@ export interface NewEventFields {
   location?: string | null;
   /** Body to write under the heading — what a template's agenda or checklist arrives as. */
   body?: string;
+  /** A focus session: the task's wikilink, and the session's `time_log` line. */
+  task?: string;
+  session?: string;
 }
 
 export class EventStore {
@@ -91,10 +94,24 @@ export class EventStore {
     if (f.remindStart != null) lines.push(`remind_start: ${f.remindStart}`);
     if (f.trip) lines.push(`trip: "${f.trip}"`);
     if (f.location) lines.push(`location: "${f.location.replace(/"/g, '\\"')}"`);
+    if (f.task) lines.push(`task: "${f.task.replace(/"/g, '\\"')}"`);
+    if (f.session) lines.push(`task_session: "${f.session}"`);
     // Left empty for the Properties panel: link the people who were there, e.g. [[Ada Fernsby]].
     lines.push("with: ", "completed: null", `modified: ${todayISO()}`, "---", "", `# ${f.title}`, "");
     if (f.body?.trim()) lines.push(f.body.trim(), "");
     return this.app.vault.create(path, lines.join("\n"));
+  }
+
+  /** The calendar event a focus session was filed as, found by its `time_log` line and its task. */
+  sessionEvents(taskPath: string, session: string): TFile[] {
+    const folder = this.settings.eventsFolder;
+    return this.app.vault.getMarkdownFiles().filter((file) => {
+      if (!file.path.startsWith(folder + "/")) return false;
+      const fm = this.app.metadataCache.getFileCache(file)?.frontmatter as Record<string, unknown> | undefined;
+      if (!fm || fm.task_session !== session || typeof fm.task !== "string") return false;
+      const link = fm.task.replace(/^\[\[|\]\]$/g, "").split("|")[0];
+      return this.app.metadataCache.getFirstLinkpathDest(link, file.path)?.path === taskPath;
+    });
   }
 
   getByPath(path: string): EventItem | null {

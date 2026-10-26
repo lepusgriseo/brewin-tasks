@@ -20,6 +20,21 @@ Its plugin id is `brewin-tasks`; it is called Brewin Planner because it grew pas
   saved filters, and the calendar and time report. Reorder or hide anything in it. On a phone, or in
   a narrow pane, it becomes a drawer behind ☰. Drag a task onto Today, Tomorrow, Next week, Someday,
   Inbox, a project or a context to send it there.
+- **Attributes of your own.** "＋ Add attribute…" in any task's window (or Settings → *Attributes*) makes
+  a field every task then offers: text, a number (with a unit such as £ or km), a date, a choice from your
+  own list, yes/no, or a link to a note. Values are filled in from the task window and saved as a property
+  on the task's note under a key fixed when the attribute is made. Each can show as a chip on task rows, has
+  its own section in the dashboard menu listing its values (tap to filter; drop a task on a value to set
+  it), can group All, and is found by search.
+- **A focus timer on every task.** ⏱️ on a task (or its ⋯ menu, its edit window, or the *Focus timer…*
+  command) opens its focus window: a clock you start, pause and finish (✓ Done ticks the task), today's,
+  this week's and total time against the task's estimate, and every session, each editable — and time
+  already worked can be added by hand. Closing the window while the clock runs asks whether to stay;
+  leaving never stops it. A small floating timer then stays over the workspace, on any note, with the
+  time and the task: tap it to go back, or pause from it. One clock runs at a time. Sessions are saved
+  on the task note (`time_log`, `time_spent`; a running clock as `timer_started`, so it survives a
+  restart and shows on another device after a sync) and, optionally, as calendar events in their own
+  category, so the Calendar shows when you worked and the Time report counts it.
 - **Your own statuses.** Settings → *Statuses* adds statuses beyond To do, On hold, Someday and Done
   (*In progress*, *Waiting on someone*, *Blocked*, *Cancelled*, or your own). Each acts as one of the
   built-in four and behaves exactly like it, with its own icon and name on the task row, in the ⋯ menu

@@ -4,6 +4,7 @@ import { rangeBrief } from "../src/rangeBrief.ts";
 import { isLiveReview } from "../src/section.ts";
 import { CalendarItem, Task } from "../src/types.ts";
 import { weekTaskReview } from "../src/views.ts";
+import { parseTimeLog } from "../src/timeTrack.ts";
 
 const TODAY = "2026-10-24";
 const MON = "2026-10-19";
@@ -65,4 +66,23 @@ test("rangeBrief: one-off events and birthdays in range, repeating blocks and ot
 test("isLiveReview: a note that draws the review live is told apart from an old frozen one", () => {
   assert.equal(isLiveReview('# Week\n```dataviewjs\nawait dv.view("00_Systems/Scripts/Review", { part: "data" })\n```\n'), true);
   assert.equal(isLiveReview("# Weekly Review — 2026-W37\n\n### Tasks this week\n\n_Run the command._\n"), false);
+});
+
+test("rangeBrief: focus-timer time per task, and focus sessions kept out of the events", () => {
+  const worked = task({ title: "Write report", timeLog: parseTimeLog(["2026-10-20T09:00/10:30", "2026-10-27T09:00/09:30"]) });
+  const b = rangeBrief({
+    from: MON,
+    to: SUN,
+    today: TODAY,
+    tasks: [worked, task({ title: "Idle" })],
+    focusCategory: "Focus",
+    items: [
+      item({ title: "Write report", date: "2026-10-20", category: "Focus" }),
+      item({ title: "Dentist", date: MON }),
+    ],
+  });
+  assert.deepEqual(b.tracked, [{ path: "Write report", title: "Write report", minutes: 90 }]);
+  assert.deepEqual(b.events.map((e) => e.title), ["Dentist"]);
+  // Without a focus category nothing is hidden.
+  assert.equal(rangeBrief({ from: MON, to: SUN, today: TODAY, tasks: [], items: [item({ category: "Focus", date: MON })] }).events.length, 1);
 });

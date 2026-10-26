@@ -31,6 +31,11 @@ import { ProjectTaskSource } from "./projectTasks";
 import { dayBrief, DayBrief } from "./dayBrief";
 import { rangeBrief, RangeBrief } from "./rangeBrief";
 import { sanitizeFlags } from "./statusFlags";
+import { sanitizeAttributes } from "./attributes";
+import { TaskTimer } from "./timer";
+import { FloatingTimer } from "./floatingTimer";
+import { FocusModal } from "./focusModal";
+import { minutesText } from "./timeTrack";
 
 /** Heading the weekly-review command fills. Must match `_Template/Weekly Review.md`. */
 const TASK_SECTION_HEADING = "### Tasks this week";
@@ -44,6 +49,10 @@ export default class BrewinTasksPlugin extends Plugin {
   templates!: TemplateStore;
   birthdays!: BirthdayStore;
   projects!: ProjectStore;
+  /** The focus timer — one clock at a time, kept on the task note. */
+  timer!: TaskTimer;
+  /** The pill that shows a running clock while its focus window is shut. */
+  floating!: FloatingTimer;
   private refreshQueued = false;
 
   /**
@@ -67,6 +76,17 @@ export default class BrewinTasksPlugin extends Plugin {
     this.templates = new TemplateStore(this.app, this.settings);
     this.birthdays = new BirthdayStore(this.app, this.settings);
     this.projects = new ProjectStore(this.app, this.settings);
+    this.timer = new TaskTimer(this);
+    this.floating = new FloatingTimer(this);
+    this.timer.onChange(() => {
+      this.floating.update();
+      this.queueRefresh();
+    });
+    CaptureModal.openFocus = (path) => this.openFocus(path);
+    CaptureModal.saveSettings = async () => {
+      await this.saveSettings();
+      this.refreshViews();
+    };
     this.reminders = new ReminderService(this);
     this.reminders.start();
 
@@ -164,6 +184,16 @@ export default class BrewinTasksPlugin extends Plugin {
       callback: () => this.reminders.testFire(),
     });
     this.addCommand({ id: "brewin-open-calendar", name: "Open calendar", callback: () => this.activateCalendar() });
+    this.addCommand({ id: "brewin-focus-timer", name: "Focus timer…", callback: () => this.pickFocus() });
+    this.addCommand({
+      id: "brewin-pause-timer",
+      name: "Pause the focus timer",
+      checkCallback: (checking) => {
+        if (!this.timer.running) return false;
+        if (!checking) void this.pauseTimer();
+        return true;
+      },
+    });
     this.addCommand({
       id: "brewin-new-event",
       name: "New event",
@@ -224,6 +254,10 @@ export default class BrewinTasksPlugin extends Plugin {
     // Registered first, so the redraw that follows the change reads the cache, not the stale copy.
     this.registerEvent(this.app.metadataCache.on("changed", (f) => this.projects.forget(f.path)));
     this.registerEvent(this.app.metadataCache.on("changed", (f) => onVaultChange(f)));
+    // A clock started or stopped on another device arrives as a change to a task note.
+    this.registerEvent(this.app.metadataCache.on("changed", (f) => {
+      if (f.path.startsWith(this.settings.itemsFolder + "/") || f.path.startsWith(this.settings.routinesFolder + "/")) this.timer.reload();
+    }));
     this.registerEvent(this.app.vault.on("create", (f) => onVaultChange(f)));
     this.registerEvent(this.app.vault.on("delete", (f) => onVaultChange(f)));
     this.registerEvent(this.app.vault.on("rename", (f, old) => onVaultChange(f, old)));
@@ -244,11 +278,44 @@ export default class BrewinTasksPlugin extends Plugin {
       window.setTimeout(() => void this.fileAwayDoneTasks(), 4000);
       // Birthdays are read from the people notes' text, once, then kept up to date by the watcher.
       void this.birthdays.loadAll().then(() => this.refreshViews());
+      // A clock left running when Obsidian closed is still running: pick it up.
+      this.timer.reload();
+      this.floating.update();
     });
   }
 
   onunload(): void {
-    // Leaves are cleaned up by Obsidian; nothing else to tear down.
+    // Leaves are cleaned up by Obsidian. The floating timer is ours, on the document itself. A
+    // running clock is not stopped: it is on the task note, and carries on when the plugin loads.
+    this.floating?.destroy();
+  }
+
+  /** A task's focus window. Asking for another task's closes the open one first (asking, if it is timing). */
+  openFocus(path: string): void {
+    const current = FocusModal.current;
+    if (current?.path === path) return;
+    current?.close();
+    if (FocusModal.current) return; // they chose to stay
+    new FocusModal(this.app, this, path).open();
+  }
+
+  /** The command: the task note that's open, else the running clock's task, else pick one. */
+  private pickFocus(): void {
+    const active = this.app.workspace.getActiveFile();
+    const task = active ? this.store.getByPath(active.path) : null;
+    if (task) return this.openFocus(task.path);
+    if (this.timer.running) return this.openFocus(this.timer.running.path);
+    const open = this.store.getTasks().filter((t) => t.status !== "done");
+    new TaskSuggestModal(this.app, open, (t) => this.openFocus(t.path), "Which task are you working on?").open();
+  }
+
+  /** Stop the clock and log the session, saying how much was logged. */
+  async pauseTimer(): Promise<void> {
+    const run = this.timer.running;
+    if (!run) return;
+    const title = this.store.getByPath(run.path)?.title ?? "the task";
+    const min = await this.timer.pause();
+    new Notice(min ? `${minutesText(min)} logged on “${title}”.` : "Under half a minute — not logged.");
   }
 
   /** Folders whose notes change what the Planner shows — its own, and Fitness's for training. */
@@ -401,6 +468,7 @@ export default class BrewinTasksPlugin extends Plugin {
       today: todayISO(),
       items: await this.calendarItems(fromISO, toISO, { tasks: false, projectTasks: false }),
       tasks: this.store.getTasks(),
+      focusCategory: this.settings.timerToCalendar ? this.settings.timerCategory : null,
     });
   }
 
@@ -543,7 +611,7 @@ export default class BrewinTasksPlugin extends Plugin {
     const file = this.app.workspace.getActiveFile();
     if (!file) return;
     const cache = this.app.metadataCache.getFileCache(file);
-    const task = taskFromFrontmatter((cache?.frontmatter ?? {}) as Record<string, unknown>, file.path, file.basename, this.settings.statusFlags);
+    const task = taskFromFrontmatter((cache?.frontmatter ?? {}) as Record<string, unknown>, file.path, file.basename, this.settings.statusFlags, this.settings.attributes);
     const r = await pickDate(this.app, task.scheduled, this.settings.firstDayOfWeek, {
       selectedLabel: "Scheduled",
       relatedISO: task.due,
@@ -703,6 +771,7 @@ export default class BrewinTasksPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     this.settings.statusFlags = sanitizeFlags(this.settings.statusFlags);
+    this.settings.attributes = sanitizeAttributes(this.settings.attributes);
   }
 
   async saveSettings(): Promise<void> {

@@ -7,6 +7,8 @@ import { parseEstimate } from "./estimate";
 import { parseRemindStart } from "./reminders";
 import { OnCompletion, Priority, RecurrenceAnchor, Status, Task } from "./types";
 import { flagFor, flagToWrite, StatusFlag } from "./statusFlags";
+import { parseStarted, parseTimeLog } from "./timeTrack";
+import { readAttrs, TaskAttribute } from "./attributes";
 
 export const TASK_TAG = "task";
 
@@ -75,7 +77,13 @@ export function hasTaskTag(tags: string[] | undefined): boolean {
  * Build a Task from a raw frontmatter record. `title` defaults to the note basename. `flags` are
  * the user's status flags from settings; without them a `flag:` is not read.
  */
-export function taskFromFrontmatter(fm: Record<string, unknown>, path: string, basename: string, flags: readonly StatusFlag[] = []): Task {
+export function taskFromFrontmatter(
+  fm: Record<string, unknown>,
+  path: string,
+  basename: string,
+  flags: readonly StatusFlag[] = [],
+  attributes: readonly TaskAttribute[] = []
+): Task {
   const title = typeof fm.title === "string" && fm.title.trim() ? fm.title.trim() : basename;
   const status = asStatus(fm.status);
   return {
@@ -83,6 +91,11 @@ export function taskFromFrontmatter(fm: Record<string, unknown>, path: string, b
     title,
     status,
     flag: flagFor(flags, fm.flag, status),
+    // Written only by the focus timer (timer.ts), never by applyTaskToFrontmatter.
+    timeLog: parseTimeLog(fm.time_log),
+    timerStarted: parseStarted(fm.timer_started),
+    // The user's own attributes — written by the task window, never by applyTaskToFrontmatter.
+    attrs: readAttrs(attributes, fm),
     scheduled: coerceISO(fm.scheduled),
     endDate: coerceISO(fm.endDate),
     startTime: asHM(fm.startTime),

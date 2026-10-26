@@ -1,6 +1,8 @@
 // Pure data model — no Obsidian imports, so this stays unit-testable.
 
 import type { StatusFlag } from "./statusFlags";
+import type { TimeSession } from "./timeTrack";
+import type { AttrValue } from "./attributes";
 
 /**
  * `someday` is for things that will never get a date — a wishlist, a shopping list, an idea. It is
@@ -26,6 +28,12 @@ export interface Task {
   status: Status;
   /** One of the user's status flags (settings), shown while `status` is the one it stands for. */
   flag?: StatusFlag | null;
+  /** Focus-timer sessions logged on the task (`time_log:`), oldest first. */
+  timeLog?: TimeSession[];
+  /** When its focus timer was started (`timer_started:`), epoch ms; null when not running. */
+  timerStarted?: number | null;
+  /** Values of the user's own attributes (settings), by attribute key; empty ones left out. */
+  attrs?: Record<string, AttrValue>;
   /** ISO "YYYY-MM-DD" do-date, or null. */
   scheduled: string | null;
   /**
