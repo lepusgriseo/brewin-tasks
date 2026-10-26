@@ -20,6 +20,14 @@ Its plugin id is `brewin-tasks`; it is called Brewin Planner because it grew pas
   saved filters, and the calendar and time report. Reorder or hide anything in it. On a phone, or in
   a narrow pane, it becomes a drawer behind ☰. Drag a task onto Today, Tomorrow, Next week, Someday,
   Inbox, a project or a context to send it there.
+- **A board in every view.** Today, Week, Inbox, Attention and All each switch between **≡ List** and
+  **▦ Board**, and a board's columns are whichever field you pick: status (your own statuses get columns
+  beside the one they stand for), context, priority, project, or one of your attributes (choice, yes/no,
+  text or link) — Week can still be by day. Dragging a card into another column changes that field:
+  status (Done completes it), context (the one it came from is swapped for the new one), priority,
+  project, or the attribute's value. Each view remembers its own layout and columns.
+- **Today's ✅ Completed.** Below the day, a collapsible section lists what was finished today — untick a
+  one-off to reopen it; a repeating task shows as done with its next date.
 - **Attributes of your own.** "＋ Add attribute…" in any task's window (or Settings → *Attributes*) makes
   a field every task then offers: text, a number (with a unit such as £ or km), a date, a choice from your
   own list, yes/no, or a link to a note. Values are filled in from the task window and saved as a property

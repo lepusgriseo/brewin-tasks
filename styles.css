@@ -1803,3 +1803,14 @@ body.is-phone .brewin-focus-icon { min-width: 40px; min-height: 40px; }
 .brewin-attrs-add { margin: 6px 0 4px; }
 .brewin-attr-modal input.brewin-attr-icon { width: 4em; text-align: center; }
 body.is-phone .brewin-attrs-add { min-height: 44px; font-size: 16px; }
+
+/* 1.60 — a board in every view, and Today's Completed section. */
+.brewin-kanban .brewin-board-head { justify-content: space-between; }
+.brewin-board-note { color: var(--text-muted); font-size: var(--font-ui-small); margin-top: 6px; }
+body.is-phone .brewin-kanban .brewin-board-col { flex-basis: 78vw; max-height: none; }
+body.is-phone .brewin-kanban { scroll-snap-type: x mandatory; }
+.brewin-done-head .brewin-fold-chevron { color: var(--text-muted); margin-right: 4px; }
+.brewin-done-today .brewin-task-row .brewin-task-title { color: var(--text-muted); }
+.brewin-done-today .brewin-task-link { text-decoration: line-through; text-decoration-color: var(--text-faint); }
+.brewin-done-recurring .brewin-task-meta { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+body.is-phone .brewin-toolbar .brewin-board-pick { flex: 0 0 auto; max-width: 48%; }

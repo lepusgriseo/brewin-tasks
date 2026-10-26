@@ -1,7 +1,7 @@
 {
   "id": "brewin-tasks",
   "name": "Brewin Planner",
-  "version": "1.59.0",
+  "version": "1.60.0",
   "minAppVersion": "1.4.0",
   "description": "First-party planner: tasks (capture, scheduling, recurrence, a Someday list), events, and a day/3-day/week/month calendar that also draws Brewin Fitness's training plan. Built for the phone. The morning digest and Attention tab report backlog from the sibling Brewin plugins too.",
   "author": "lepusalbus",

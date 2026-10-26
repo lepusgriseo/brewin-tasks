@@ -143,6 +143,14 @@ export interface BrewinSettings {
   /** Made from the task window; one frontmatter property each — see `attributes.ts`. */
   attributes: TaskAttribute[];
 
+  // ── 1.60: a board for every view ────────────────────────────────────────────
+  /** List or board, per view (`today`, `week`, `inbox`, `attention`, `all`, `projects`). */
+  layouts: Record<string, "list" | "board">;
+  /** What a view's board columns are (`BoardField`), per view. */
+  boardBy: Record<string, string>;
+  /** Today's ✅ Completed section is open. */
+  todayDoneOpen: boolean;
+
   // ── 1.53: birthdays, from the people notes ─────────────────────────────────
   /** Where the people notes are; each one's `DOB::` line is its birthday. */
   peopleFolder: string;
@@ -214,6 +222,9 @@ export const DEFAULT_SETTINGS: BrewinSettings = {
   timerConfirmLeave: true,
   timerFloating: true,
   attributes: [],
+  layouts: {},
+  boardBy: {},
+  todayDoneOpen: false,
   peopleFolder: "04_Areas/People",
   birthdaysOnCalendar: true,
   birthdayReminders: true,

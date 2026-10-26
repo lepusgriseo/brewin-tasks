@@ -55,6 +55,7 @@ import { formatEstimate, parseEstimate, workload } from "./estimate";
 import { flagCounts, flagRefusal, flagText, StatusFlag } from "./statusFlags";
 import { minutesText, totalMinutes } from "./timeTrack";
 import { attrChip, attrMatches, attrMenuValues, groupByAttr, parseAttrInput, TaskAttribute } from "./attributes";
+import { boardColumns, boardDrop, BoardField, boardFields } from "./board";
 import {
   attentionTasks,
   DASH_VIEWS,
@@ -72,10 +73,21 @@ import {
   todayAgenda,
   unscheduledTasks,
   weekAgenda,
+  weekTaskReview,
 } from "./views";
 import { CalendarItem, Task } from "./types";
 
 export const BREWIN_VIEW_TYPE = "brewin-tasks-dashboard";
+
+/** The views that can be a board, and what their columns are until the user picks. */
+const BOARD_DEFAULT: Partial<Record<DashView, BoardField>> = {
+  today: "status",
+  week: "day",
+  inbox: "context",
+  attention: "status",
+  all: "status",
+  projects: "project",
+};
 
 /** Below this width the menu stops being a column and becomes a drawer behind ☰. */
 const MENU_DRAWER_BELOW = 620;
@@ -288,6 +300,119 @@ export class DashboardView extends ItemView {
     return { view: this.view, project: this.project, context: this.contextFilter, flag: this.flagFilter, attr: this.attrFilter, query: this.query, groupBy: this.groupBy };
   }
 
+  /** This view as a list or a board. */
+  private layout(): "list" | "board" {
+    return BOARD_DEFAULT[this.view] ? this.plugin.settings.layouts[this.view] ?? "list" : "list";
+  }
+
+  private isBoard(): boolean {
+    return !this.project && this.layout() === "board";
+  }
+
+  /** What this view's board columns are: the user's pick while it is still offered, else the view's own. */
+  private boardField(): BoardField {
+    const picked = this.plugin.settings.boardBy[this.view];
+    const offered = boardFields(this.plugin.settings.attributes, this.view === "week").map((f) => f.field as string);
+    return (picked && offered.includes(picked) ? picked : BOARD_DEFAULT[this.view] ?? "status") as BoardField;
+  }
+
+  /** The tasks a view shows, for its board — the same ones its list does. */
+  private boardTasks(tasks: Task[], today: string): Task[] {
+    const unique = (list: Task[]) => [...new Map(list.map((t) => [t.path, t])).values()];
+    switch (this.view) {
+      case "today": {
+        const a = todayAgenda(tasks, [], today);
+        const open = [...a.overdue, ...a.carried, ...a.timed.flatMap((r) => (r.task && !r.done ? [r.task] : [])), ...a.anytime];
+        // On a status board, what was finished today fills Done.
+        const done = this.boardField() === "status" ? weekTaskReview(tasks, today, today, today).doneOneOff : [];
+        return unique([...open, ...done]);
+      }
+      case "week":
+        return unique(weekAgenda(tasks, today, 7).flatMap((d) => d.tasks));
+      case "inbox":
+        return unique([...inboxTasks(tasks), ...tasks.filter((t) => t.status === "someday")]);
+      case "attention": {
+        const g = attentionTasks(tasks, today);
+        return unique([...g.overdue, ...g.slipped, ...g.onhold]);
+      }
+      default:
+        return tasks.filter((t) => t.status !== "done");
+    }
+  }
+
+  /** A view as a board: a column per value of the chosen field; drag a card across to change it. */
+  private renderBoard(root: HTMLElement, field: BoardField, tasks: Task[], today: string): void {
+    const ctx = {
+      flags: this.plugin.settings.statusFlags,
+      attributes: this.plugin.settings.attributes,
+      projects: this.activeProjects().map((p) => ({ path: p.path, name: p.name })),
+    };
+    const cols = boardColumns(field, tasks, ctx);
+    const board = root.createDiv({ cls: "brewin-board brewin-kanban" });
+    for (const c of cols) {
+      const col = board.createDiv({ cls: "brewin-board-col", attr: { "data-drop-col": `${field}|${c.key}` } });
+      const head = col.createDiv({ cls: "brewin-board-head" });
+      head.createSpan({ text: `${c.icon} ${c.label}` });
+      if (c.tasks.length) head.createSpan({ cls: "brewin-count", text: String(c.tasks.length) });
+      const body = col.createDiv({ cls: "brewin-board-body" });
+      if (!c.tasks.length) body.createDiv({ cls: "brewin-board-empty", text: "—" });
+      for (const t of c.tasks) this.card(body, t, t.scheduled && t.scheduled > today ? t.scheduled : today);
+    }
+    if (!tasks.length) root.createDiv({ cls: "brewin-board-note", text: "Nothing here yet — drop a card on a column to change it." });
+  }
+
+  /** A card dropped on a board column: change the field the columns are, or say why not. */
+  private async applyBoardDrop(target: string, from: string | null, task: Task): Promise<void> {
+    const [field, toKey] = target.split("|") as [BoardField, string];
+    const fromKey = from?.split("|")[1] ?? null;
+    const fresh = this.plugin.store.getByPath(task.path) ?? task;
+    const ctx = {
+      flags: this.plugin.settings.statusFlags,
+      attributes: this.plugin.settings.attributes,
+      projects: this.activeProjects().map((p) => ({ path: p.path, name: p.name })),
+    };
+    const action = boardDrop(field, fresh, fromKey, toKey, ctx);
+    const store = this.plugin.store;
+    const t = `“${fresh.title}”`;
+    switch (action.kind) {
+      case "none":
+        return;
+      case "refuse":
+        new Notice(`${t} ${action.reason}.`);
+        return;
+      case "status":
+        if (action.status === "done") {
+          const res = await store.complete(fresh);
+          if (!res.ok) return void new Notice(`${t} can't be done yet — ${[res.open ? `${res.open} subtask(s) open` : "", res.blocked ? `waiting on ${res.blocked} task(s)` : ""].filter(Boolean).join(" and ")}.`);
+        } else if (fresh.status === "done") {
+          await store.reopen(fresh);
+          if (action.status !== "todo") await store.setStatus(store.getByPath(fresh.path) ?? fresh, action.status);
+        } else await store.setStatus(fresh, action.status);
+        break;
+      case "flag": {
+        const refused = await store.setFlag(fresh, action.flag);
+        if (refused) return void new Notice(`${t} ${refused}.`);
+        break;
+      }
+      case "priority":
+        await store.setPriority(fresh, action.priority);
+        break;
+      case "contexts":
+        await store.updateFields(fresh, { contexts: action.contexts });
+        break;
+      case "project":
+        await store.setProject(fresh, action.path);
+        break;
+      case "attr": {
+        const a = action.attr;
+        const value = action.value === null ? null : a.kind === "bool" ? true : parseAttrInput(a, this.attrValueAsWritten(a, action.value));
+        await store.setAttrs(fresh.path, { [a.key]: value });
+        break;
+      }
+    }
+    this.render();
+  }
+
   /** One of the user's attributes, by key. */
   private attr(key: string | null | undefined): TaskAttribute | null {
     return (key && this.plugin.settings.attributes.find((a) => a.key === key)) || null;
@@ -389,8 +514,8 @@ export class DashboardView extends ItemView {
     }
 
     const actions = bar.createDiv({ cls: "brewin-dash-actions" });
-    // Grouping only exists in All.
-    if (this.view === "all" && !this.project) {
+    // Grouping only exists in All, and only as a list — a board has its columns instead.
+    if (this.view === "all" && !this.project && !this.isBoard()) {
       const grp = actions.createEl("select", { cls: "brewin-groupby dropdown" });
       grp.createEl("option", { text: "Group: date", value: "date" });
       grp.createEl("option", { text: "Group: context", value: "context" });
@@ -402,23 +527,37 @@ export class DashboardView extends ItemView {
         void this.renderBody();
       });
     }
-    // Layout toggle — only Week and Projects have headings to turn into columns, and a phone is
-    // too narrow for the Week board, so it is not offered there.
-    if (!this.project && (this.view === "projects" || (this.view === "week" && !Platform.isPhone))) {
-      const key = this.view === "week" ? "weekLayout" : "projectsLayout";
-      const current = this.plugin.settings[key];
+    // List or board, for every view that can be one; a board's columns by the field picked beside it.
+    let boardPicker: ((parent: HTMLElement) => void) | null = null;
+    if (!this.project && BOARD_DEFAULT[this.view]) {
+      const current = this.layout();
       const lay = actions.createDiv({ cls: "brewin-layout-seg" });
+      // A phone's title bar has room for the symbols only; the names are their labels.
       ([
-        ["list", "≡ List"],
-        ["board", "▦ Board"],
-      ] as const).forEach(([value, label]) => {
-        const b = lay.createEl("button", { text: label, cls: current === value ? "active" : "" });
+        ["list", "≡", "List"],
+        ["board", "▦", "Board"],
+      ] as const).forEach(([value, icon, name]) => {
+        const b = lay.createEl("button", { text: Platform.isPhone ? icon : `${icon} ${name}`, cls: current === value ? "active" : "" });
+        b.setAttr("aria-label", name);
         b.addEventListener("click", async () => {
-          this.plugin.settings[key] = value;
+          this.plugin.settings.layouts[this.view] = value;
           await this.plugin.saveSettings();
           this.render();
         });
       });
+      // The columns picker: in the title bar, or on a phone in the row under it, where there's room.
+      if (current === "board" && this.view !== "projects") boardPicker = (parent: HTMLElement) => {
+        const pick = parent.createEl("select", { cls: "brewin-groupby dropdown brewin-board-pick" });
+        pick.setAttr("aria-label", "Board columns");
+        for (const f of boardFields(this.plugin.settings.attributes, this.view === "week")) pick.createEl("option", { text: `Columns: ${f.label}`, value: f.field });
+        pick.value = this.boardField();
+        pick.addEventListener("change", async () => {
+          this.plugin.settings.boardBy[this.view] = pick.value;
+          await this.plugin.saveSettings();
+          void this.renderBody();
+        });
+      };
+      if (boardPicker && !Platform.isPhone) boardPicker(actions);
     }
     const selBtn = actions.createEl("button", { cls: "brewin-select-toggle" + (this.selecting ? " mod-cta" : "") });
     if (this.view === "birthdays" && !this.project) selBtn.addClass("brewin-hidden"); // there are no tasks to select
@@ -439,6 +578,7 @@ export class DashboardView extends ItemView {
     // Search (when the menu isn't showing it) and the context the list is narrowed to.
     const tools = header.createDiv({ cls: "brewin-toolbar" });
     if (!this.searchInMenu()) this.renderSearch(tools);
+    if (boardPicker && Platform.isPhone) boardPicker(tools);
     if (this.contextFilter) {
       const chip = tools.createEl("button", { cls: "brewin-filter-chip", text: `@${this.contextFilter} ✕` });
       chip.setAttr("aria-label", `Stop filtering by @${this.contextFilter}`);
@@ -1032,6 +1172,12 @@ export class DashboardView extends ItemView {
       return this.renderBulkBar();
     }
 
+    // A board, in any view that can be one — except Week by day and Projects, which draw their own.
+    if (this.isBoard() && this.view !== "projects" && !(this.view === "week" && this.boardField() === "day")) {
+      this.renderBoard(root, this.boardField(), this.boardTasks(tasks, today), today);
+      return this.renderBulkBar();
+    }
+
     if (this.view === "today") { this.renderToday(root, tasks, today); return this.renderBulkBar(); }
     if (this.view === "week") { this.renderWeek(root, tasks, today); return this.renderBulkBar(); }
     if (this.view === "inbox") { this.renderInbox(root, tasks); return this.renderBulkBar(); }
@@ -1100,9 +1246,14 @@ export class DashboardView extends ItemView {
 
     const top = el.createDiv({ cls: "brewin-card-top" });
     const cb = top.createEl("input", { type: "checkbox" });
+    cb.checked = task.status === "done";
     cb.addEventListener("click", async (e) => {
       e.preventDefault();
       e.stopPropagation();
+      if (task.status === "done") {
+        await this.plugin.store.reopen(task);
+        return void this.render();
+      }
       const res = await this.plugin.store.complete(task);
       if (!res.ok) {
         new Notice(`Can't complete "${task.title}" — ${res.open} subtask${res.open === 1 ? "" : "s"} still open.`);
@@ -1212,7 +1363,10 @@ export class DashboardView extends ItemView {
         if (isCard) this.suppressClick = true;
         const iso = target?.getAttribute("data-drop-date");
         const key = target?.getAttribute("data-drop-menu");
-        if (iso) {
+        const col = target?.getAttribute("data-drop-col");
+        if (col) {
+          await this.applyBoardDrop(col, el.closest("[data-drop-col]")?.getAttribute("data-drop-col") ?? null, task);
+        } else if (iso) {
           if (task.recurrence) {
             new Notice(`“${task.title}” repeats on its own schedule.`);
             return;
@@ -1246,7 +1400,7 @@ export class DashboardView extends ItemView {
 
   private columnAt(x: number, y: number): HTMLElement | null {
     const el = document.elementFromPoint(x, y) as HTMLElement | null;
-    return (el?.closest("[data-drop-date], [data-drop-menu]") as HTMLElement | null) ?? null;
+    return (el?.closest("[data-drop-date], [data-drop-menu], [data-drop-col]") as HTMLElement | null) ?? null;
   }
 
   private highlightColumn(x: number, y: number): void {
@@ -1982,6 +2136,50 @@ export class DashboardView extends ItemView {
         text: a.doneCount ? "Everything for today is done." : "Nothing scheduled for today.",
       });
     }
+
+    this.renderDoneToday(root, tasks, today);
+  }
+
+  /**
+   * ✅ Completed: what was finished today, folded away under its heading (the fold is remembered).
+   * A one-off unticks to reopen. A repeating task has already moved on to its next date when ticked,
+   * so it is shown done, but can't be unticked from here.
+   */
+  private renderDoneToday(root: HTMLElement, tasks: Task[], today: string): void {
+    const done = weekTaskReview(tasks, today, today, today);
+    const n = done.doneOneOff.length + done.doneRecurring.length;
+    if (!n) return;
+    const s = this.plugin.settings;
+    const head = this.sectionHeader(root, "✅ Completed", n);
+    head.addClass("is-foldable", "brewin-done-head");
+    const chevron = head.createSpan({ cls: "brewin-fold-chevron", text: s.todayDoneOpen ? "▾" : "▸" });
+    head.prepend(chevron);
+    head.setAttr("role", "button");
+    head.setAttr("aria-expanded", String(s.todayDoneOpen));
+    const body = root.createDiv({ cls: "brewin-done-today" });
+    body.toggleClass("brewin-collapsed", !s.todayDoneOpen);
+    head.addEventListener("click", async () => {
+      s.todayDoneOpen = !s.todayDoneOpen;
+      body.toggleClass("brewin-collapsed", !s.todayDoneOpen);
+      chevron.setText(s.todayDoneOpen ? "▾" : "▸");
+      head.setAttr("aria-expanded", String(s.todayDoneOpen));
+      await this.plugin.saveSettings();
+    });
+    for (const t of done.doneOneOff) this.taskRow(body, t, true);
+    for (const r of done.doneRecurring) {
+      const row = body.createDiv({ cls: "brewin-task-row brewin-done-recurring" });
+      const box = row.createEl("input", { type: "checkbox" });
+      box.checked = true;
+      box.disabled = true;
+      box.setAttr("aria-label", "Done today — it is already on its next date");
+      const main = row.createDiv({ cls: "brewin-task-main" });
+      const title = main.createDiv({ cls: "brewin-task-title" });
+      title.createSpan({ cls: "brewin-recur", text: "🔁 " });
+      const link = title.createSpan({ cls: "brewin-task-link", text: r.task.title });
+      link.addEventListener("click", () => this.editTask(r.task));
+      const next = r.task.scheduled && r.task.scheduled > today ? ` · next ${relativeDay(r.task.scheduled, today)}` : "";
+      main.createDiv({ cls: "brewin-task-meta", text: `done today${next}` });
+    }
   }
 
   /** Week: the next 7 days, one group per day, empty days kept as visible breathing room. */
@@ -1990,7 +2188,7 @@ export class DashboardView extends ItemView {
     const total = days.reduce((n, d) => n + d.tasks.length, 0);
 
     // Seven board columns on a phone showed a day and a half; the list reads the whole week.
-    if (this.plugin.settings.weekLayout === "board" && !Platform.isPhone) {
+    if (this.layout() === "board" && !Platform.isPhone) {
       // The board stays up even when empty — its columns ARE the information.
       const board = root.createDiv({ cls: "brewin-board" });
       for (const day of days) {
@@ -2090,7 +2288,7 @@ export class DashboardView extends ItemView {
     }
     if (!groups.length) root.createDiv({ cls: "brewin-empty", text: "No active projects." });
 
-    if (groups.length && this.plugin.settings.projectsLayout === "board") {
+    if (groups.length && this.layout() === "board") {
       const board = root.createDiv({ cls: "brewin-board" });
       for (const { p, notes } of groups) {
         const col = board.createDiv({ cls: "brewin-board-col" });

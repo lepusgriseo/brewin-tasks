@@ -772,6 +772,11 @@ export default class BrewinTasksPlugin extends Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     this.settings.statusFlags = sanitizeFlags(this.settings.statusFlags);
     this.settings.attributes = sanitizeAttributes(this.settings.attributes);
+    // 1.60 keeps every view's list-or-board choice in one place; Week's and Projects' came first.
+    this.settings.layouts = { ...(this.settings.layouts ?? {}) };
+    this.settings.layouts.week ??= this.settings.weekLayout;
+    this.settings.layouts.projects ??= this.settings.projectsLayout;
+    this.settings.boardBy = { ...(this.settings.boardBy ?? {}) };
   }
 
   async saveSettings(): Promise<void> {
