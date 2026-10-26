@@ -1,5 +1,5 @@
 import { Notice, Platform, Plugin, TAbstractFile, TFile, WorkspaceLeaf } from "obsidian";
-import { BrewinSettings, BrewinSettingTab, DEFAULT_SETTINGS } from "./settings";
+import { BrewinSettings, BrewinSettingTab, DEFAULT_SETTINGS, PROJECTS_CATEGORY } from "./settings";
 import { TaskStore } from "./taskStore";
 import { CaptureModal } from "./captureModal";
 import { BREWIN_VIEW_TYPE, DashboardView } from "./dashboardView";
@@ -14,9 +14,9 @@ import { ReminderService } from "./reminderService";
 import { BacklogStore } from "./backlogStore";
 import { ConfirmModal } from "./confirmModal";
 import { formatHM, isoWeekOf, minutesOfDay, nowMinutes, todayISO, weekRange } from "./dates";
-import { eventsToItems, tasksToItems } from "./calendarItem";
-import { attentionTasks, expandRecurringTasks, formatWeekTaskBlock, unscheduledTasks, weekTaskReview } from "./views";
-import { fillSection } from "./section";
+import { eventsToItems, projectTasksToItems, tasksToItems } from "./calendarItem";
+import { attentionTasks, expandRecurringTasks, formatWeekTaskBlock, groupByProject, unscheduledTasks, weekTaskReview } from "./views";
+import { fillSection, isLiveReview } from "./section";
 import { autoScheduleDay, freeGapsToday } from "./autoSchedule";
 import { CalendarItem } from "./types";
 import { TemplateStore } from "./templateStore";
@@ -27,6 +27,10 @@ import { parseTimes, planIsRest, planSlots, TrainingSource, trainingItems } from
 import { BirthdayStore } from "./birthdayStore";
 import { ProjectStore } from "./projectStore";
 import { birthdayLabel, birthdaysBetween } from "./birthdays";
+import { ProjectTaskSource } from "./projectTasks";
+import { dayBrief, DayBrief } from "./dayBrief";
+import { rangeBrief, RangeBrief } from "./rangeBrief";
+import { sanitizeFlags } from "./statusFlags";
 
 /** Heading the weekly-review command fills. Must match `_Template/Weekly Review.md`. */
 const TASK_SECTION_HEADING = "### Tasks this week";
@@ -41,6 +45,19 @@ export default class BrewinTasksPlugin extends Plugin {
   birthdays!: BirthdayStore;
   projects!: ProjectStore;
   private refreshQueued = false;
+
+  /**
+   * Read-only, for notes: `app.plugins.plugins["brewin-tasks"].api.day("2026-10-22")` from
+   * dataviewjs. The day note (`00_Systems/Scripts/Day/view.js`) and the review notes
+   * (`00_Systems/Scripts/Review/view.js`) are the callers; `version` lets them notice a change of
+   * shape (adding a function, as `range` was in 1.56.0, keeps it).
+   */
+  readonly api = {
+    version: 1,
+    day: (iso: string): Promise<DayBrief> => this.dayBrief(iso),
+    /** Inclusive ISO range, for the weekly and monthly reviews (`00_Systems/Scripts/Review`). */
+    range: (fromISO: string, toISO: string): Promise<RangeBrief> => this.rangeBrief(fromISO, toISO),
+  };
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -330,6 +347,63 @@ export default class BrewinTasksPlugin extends Plugin {
     }));
   }
 
+  /**
+   * Everything the Calendar places between two days: tasks (repeats expanded), events, active
+   * projects' steps, training from the Fitness plan and birthdays. The Calendar passes its own
+   * switches and hidden categories; the day note takes everything.
+   */
+  async calendarItems(
+    fromISO: string,
+    toISO: string,
+    o: { tasks?: boolean; events?: boolean; projectTasks?: boolean; shown?: (category: string) => boolean } = {}
+  ): Promise<CalendarItem[]> {
+    const shown = o.shown ?? (() => true);
+    const items: CalendarItem[] = [];
+    if (o.tasks ?? true) {
+      // Recurring tasks are EXPANDED across the range, same as recurring events — otherwise there'd
+      // be nothing beyond the current occurrence to drag or edit. Multi-day tasks are left to the
+      // caller's spanning bar.
+      const all = this.store.getTasks();
+      items.push(
+        ...tasksToItems(all.filter((t) => !t.recurrence), fromISO, toISO, this.settings.slotBlockMinutes, { skipMultiDay: true }),
+        ...expandRecurringTasks(all.filter((t) => !!t.recurrence), fromISO, toISO, this.settings.slotBlockMinutes)
+      );
+    }
+    if (o.events ?? true) items.push(...eventsToItems(this.events.getEvents(), fromISO, toISO).filter((it) => shown(it.category)));
+    if (o.projectTasks ?? true) {
+      const pts = await new ProjectTaskSource(this.app, this.settings).getProjectTasks(true); // active projects only
+      items.push(...projectTasksToItems(pts, fromISO, toISO, PROJECTS_CATEGORY));
+    }
+    // Brewin Fitness's plan — one source of truth for training instead of hand-made events.
+    items.push(...this.trainingItems(fromISO, toISO).filter((it) => shown(it.category)));
+    // Birthdays from the people notes' DOB:: lines.
+    items.push(...this.birthdayItems(fromISO, toISO));
+    return items;
+  }
+
+  /** What one day holds, for the day note — see `dayBrief`. */
+  async dayBrief(iso: string): Promise<DayBrief> {
+    const steps = new Map(groupByProject(await new ProjectTaskSource(this.app, this.settings).getProjectTasks()).map((g) => [g.path, g.tasks]));
+    return dayBrief({
+      date: iso,
+      today: todayISO(),
+      items: await this.calendarItems(iso, iso, { tasks: false }),
+      tasks: this.store.getTasks(),
+      projects: this.projects.list().map((info) => ({ info, openSteps: steps.get(info.path) ?? [] })),
+    });
+  }
+
+  /** What a stretch of days held, for the review notes — see `rangeBrief`. */
+  async rangeBrief(fromISO: string, toISO: string): Promise<RangeBrief> {
+    return rangeBrief({
+      from: fromISO,
+      to: toISO,
+      today: todayISO(),
+      items: await this.calendarItems(fromISO, toISO, { tasks: false, projectTasks: false }),
+      tasks: this.store.getTasks(),
+    });
+  }
+
   /** Open a training item: the logged session if there is one, else start it in Fitness. */
   async openTraining(item: CalendarItem): Promise<void> {
     const fit = this.fitness();
@@ -448,6 +522,10 @@ export default class BrewinTasksPlugin extends Plugin {
 
   /** Write a frozen summary of the week's tasks (done / missed / still open) into `file`. */
   async insertWeekTaskSummary(file: TFile): Promise<void> {
+    if (isLiveReview(await this.app.vault.read(file))) {
+      new Notice("This review shows its tasks live — nothing to insert. Its 📌 button freezes the week.");
+      return;
+    }
     const week = this.resolveReviewWeek(file);
     if (!week) return;
     const review = weekTaskReview(this.store.getTasks(), week.start, week.end, todayISO());
@@ -465,7 +543,7 @@ export default class BrewinTasksPlugin extends Plugin {
     const file = this.app.workspace.getActiveFile();
     if (!file) return;
     const cache = this.app.metadataCache.getFileCache(file);
-    const task = taskFromFrontmatter((cache?.frontmatter ?? {}) as Record<string, unknown>, file.path, file.basename);
+    const task = taskFromFrontmatter((cache?.frontmatter ?? {}) as Record<string, unknown>, file.path, file.basename, this.settings.statusFlags);
     const r = await pickDate(this.app, task.scheduled, this.settings.firstDayOfWeek, {
       selectedLabel: "Scheduled",
       relatedISO: task.due,
@@ -588,6 +666,14 @@ export default class BrewinTasksPlugin extends Plugin {
     }
   }
 
+  /** Open the Planner's own tab in Obsidian's settings (the menu's "Add your own…" status). */
+  openSettings(): void {
+    // `app.setting` is real but not in the public typings.
+    const setting = (this.app as unknown as { setting?: { open(): void; openTabById(id: string): void } }).setting;
+    setting?.open();
+    setting?.openTabById(this.manifest.id);
+  }
+
   refreshViews(): void {
     for (const leaf of this.app.workspace.getLeavesOfType(BREWIN_VIEW_TYPE)) {
       if (leaf.view instanceof DashboardView) leaf.view.render();
@@ -616,6 +702,7 @@ export default class BrewinTasksPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings.statusFlags = sanitizeFlags(this.settings.statusFlags);
   }
 
   async saveSettings(): Promise<void> {

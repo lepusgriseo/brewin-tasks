@@ -6,18 +6,20 @@ import { isOpen, nextWeekStart } from "./status";
 import { hasContext } from "./contexts";
 import { shiftISO } from "./dates";
 import { Task } from "./types";
+import { flagRefusal, StatusFlag } from "./statusFlags";
 
 /** The menu's groups, top to bottom. Each can be folded, or hidden from the menu altogether. */
-export type MenuSection = "progress" | "projects" | "contexts" | "filters" | "links";
+export type MenuSection = "progress" | "projects" | "contexts" | "statuses" | "filters" | "links";
 
 /**
  * Entries are addressed by key so one hidden-list covers every kind: `view:today`,
- * `section:links`, `project:<vault path>`, `context:<lower-case name>`.
+ * `section:links`, `project:<vault path>`, `context:<lower-case name>`, `flag:<flag id>`.
  */
 export const viewKey = (id: DashView): string => `view:${id}`;
 export const sectionKey = (id: MenuSection): string => `section:${id}`;
 export const projectKey = (path: string): string => `project:${path}`;
 export const contextKey = (value: string): string => `context:${value.toLowerCase()}`;
+export const flagKey = (id: string): string => `flag:${id}`;
 
 /**
  * The views in the user's order. A saved order may predate a view (or name one that has since
@@ -99,6 +101,8 @@ export interface DashState {
   /** Vault path of the project note being shown on its own, or null. */
   project: string | null;
   context: string | null;
+  /** A status flag's id: only tasks carrying it. Absent from filters saved before 1.57. */
+  flag?: string | null;
   query: string;
   groupBy: "date" | "context";
 }
@@ -116,16 +120,18 @@ export interface SavedFilter extends DashState {
 export function matchesFilter(f: DashState, s: DashState): boolean {
   if (f.view !== s.view || (f.project ?? null) !== (s.project ?? null)) return false;
   if ((f.context ?? "").toLowerCase() !== (s.context ?? "").toLowerCase()) return false;
+  if ((f.flag ?? null) !== (s.flag ?? null)) return false;
   if (f.query.trim().toLowerCase() !== s.query.trim().toLowerCase()) return false;
   if (!s.project && s.view === "all" && f.groupBy !== s.groupBy) return false;
   return true;
 }
 
-/** A name to offer when saving: the view (or project), then the context and the search. */
-export function suggestFilterName(s: DashState, projectName: string | null): string {
+/** A name to offer when saving: the view (or project), then the context, the flag and the search. */
+export function suggestFilterName(s: DashState, projectName: string | null, flagLabel: string | null = null): string {
   const base = s.project ? projectName ?? "Project" : DASH_VIEWS.find((v) => v.id === s.view)?.label ?? s.view;
   const parts = [base];
   if (s.context) parts.push(`@${s.context}`);
+  if (s.flag) parts.push(flagLabel ?? s.flag);
   if (s.query.trim()) parts.push(`“${s.query.trim()}”`);
   if (!s.project && s.view === "all" && s.groupBy === "context") parts.push("by context");
   return parts.join(" · ");
@@ -157,9 +163,10 @@ export type DropAction =
   | { kind: "someday" }
   | { kind: "context"; value: string }
   | { kind: "project"; path: string }
+  | { kind: "flag"; flag: StatusFlag }
   | { kind: "refuse"; reason: string };
 
-type DropTask = Pick<Task, "status" | "scheduled" | "recurrence" | "contexts"> & { projectPath?: string | null };
+type DropTask = Pick<Task, "status" | "scheduled" | "recurrence" | "contexts" | "flag"> & { projectPath?: string | null };
 
 /**
  * What a task dropped on a menu entry should become. `null` means the entry is not a drop
@@ -168,7 +175,7 @@ type DropTask = Pick<Task, "status" | "scheduled" | "recurrence" | "contexts"> &
  * A recurring task's dates belong to its rule, so the date targets refuse it — the same reason
  * the week board won't let one be dragged. Giving it a context or a project is fine.
  */
-export function resolveDrop(key: string, task: DropTask, today: string, firstDayOfWeek: number): DropAction | null {
+export function resolveDrop(key: string, task: DropTask, today: string, firstDayOfWeek: number, flags: readonly StatusFlag[] = []): DropAction | null {
   const dated = (iso: string): DropAction => {
     if (task.recurrence) return { kind: "refuse", reason: "repeats on its own schedule" };
     if (task.scheduled === iso && task.status === "todo") return { kind: "refuse", reason: "is already scheduled then" };
@@ -198,6 +205,12 @@ export function resolveDrop(key: string, task: DropTask, today: string, firstDay
     if (!path) return null;
     if (task.projectPath === path) return { kind: "refuse", reason: "is already in that project" };
     return { kind: "project", path };
+  }
+  if (key.startsWith("flag:")) {
+    const flag = flags.find((f) => f.id === key.slice("flag:".length));
+    if (!flag) return null;
+    const reason = flagRefusal(task, flag);
+    return reason ? { kind: "refuse", reason } : { kind: "flag", flag };
   }
   return null;
 }

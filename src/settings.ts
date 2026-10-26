@@ -1,6 +1,10 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import type { CalView } from "./calendar";
 import type { SavedFilter } from "./dashMenu";
+import { BUILTIN_STATUSES, FLAG_SUGGESTIONS, flagText, moveFlag, StatusFlag, uniqueFlagId } from "./statusFlags";
+import { ConfirmModal } from "./confirmModal";
+import { PromptModal } from "./promptModal";
+import type { Status } from "./types";
 import type BrewinTasksPlugin from "./main";
 
 export interface Category {
@@ -119,6 +123,10 @@ export interface BrewinSettings {
   /** Named dashboard states, in the order they were saved. */
   savedFilters: SavedFilter[];
 
+  // ── 1.57: the user's own statuses ──────────────────────────────────────────
+  /** Status flags, in menu order. Each stands for a built-in status — see `statusFlags.ts`. */
+  statusFlags: StatusFlag[];
+
   // ── 1.53: birthdays, from the people notes ─────────────────────────────────
   /** Where the people notes are; each one's `DOB::` line is its birthday. */
   peopleFolder: string;
@@ -184,6 +192,7 @@ export const DEFAULT_SETTINGS: BrewinSettings = {
   menuHidden: [],
   menuFolded: [],
   savedFilters: [],
+  statusFlags: [],
   peopleFolder: "04_Areas/People",
   birthdaysOnCalendar: true,
   birthdayReminders: true,
@@ -396,6 +405,8 @@ export class BrewinSettingTab extends PluginSettingTab {
           this.plugin.refreshViews();
         })
       );
+
+    this.displayStatusFlags(containerEl);
 
     containerEl.createEl("h3", { text: "Birthdays" });
     new Setting(containerEl)
@@ -758,5 +769,144 @@ export class BrewinSettingTab extends PluginSettingTab {
           this.display();
         })
     );
+  }
+
+  // ── Statuses: the four built in, and the user's own flags ──────────────────────────────
+
+  private displayStatusFlags(containerEl: HTMLElement): void {
+    const settings = this.plugin.settings;
+    containerEl.createEl("h3", { text: "Statuses" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Four statuses are built in. Add your own when they aren't enough: each one acts as one of the four, so it is " +
+        "listed and counted exactly like it, but shows its own icon and name on the task, in the ⋯ menu and the edit " +
+        "window, and in the dashboard menu's Statuses section. Notes keep the built-in status in “status:” and yours in “flag:”.",
+    });
+    const builtIn = containerEl.createEl("ul", { cls: "setting-item-description brewin-status-builtins" });
+    for (const b of BUILTIN_STATUSES) builtIn.createEl("li", { text: `${b.icon} ${b.label} — ${b.meaning}` });
+
+    const tasks = this.plugin.store.getTasks();
+    const save = async () => {
+      await this.plugin.saveSettings();
+      this.plugin.refreshViews();
+    };
+    const baseLabel = (b: Status) => BUILTIN_STATUSES.find((x) => x.id === b)?.label ?? b;
+    const plural = (n: number) => `${n} task${n === 1 ? "" : "s"}`;
+
+    settings.statusFlags.forEach((flag, idx) => {
+      const using = tasks.filter((t) => t.flag?.id === flag.id);
+      const row = new Setting(containerEl).setName(flagText(flag)).setDesc(`Saved as flag: ${flag.id} · ${using.length ? plural(using.length) : "no tasks yet"}`);
+      row.settingEl.addClass("brewin-flag-setting");
+      row.addText((t) => {
+        t.inputEl.addClass("brewin-flag-icon");
+        t.inputEl.setAttr("aria-label", "Icon");
+        t.setPlaceholder("🏷").setValue(flag.icon).onChange(async (v) => {
+          flag.icon = v.trim() || "🏷";
+          row.setName(flagText(flag));
+          await save();
+        });
+      });
+      row.addText((t) => {
+        t.inputEl.setAttr("aria-label", "Name");
+        t.setPlaceholder("Name").setValue(flag.label).onChange(async (v) => {
+          flag.label = v.trim() || flag.id;
+          row.setName(flagText(flag));
+          await save();
+        });
+      });
+      row.addDropdown((d) => {
+        for (const b of BUILTIN_STATUSES) d.addOption(b.id, `acts as ${b.label}`);
+        d.setValue(flag.base).onChange((v) => {
+          const base = v as Status;
+          const move = async () => {
+            flag.base = base;
+            await this.plugin.saveSettings();
+            // Its tasks follow it to the new status — that is what changing it means.
+            let refused = 0;
+            for (const t of using) {
+              if (await this.plugin.store.setFlag({ ...t, flag: null }, flag)) {
+                refused++;
+                await this.plugin.store.clearFlag(t);
+              }
+            }
+            if (refused) new Notice(`${plural(refused)} couldn't become ${baseLabel(base)} (repeating, or with open subtasks) and lost the ${flag.label} status.`);
+            this.plugin.refreshViews();
+            this.display();
+          };
+          if (!using.length) return void move();
+          new ConfirmModal(this.app, {
+            title: `${flagText(flag)} acts as ${baseLabel(base)}?`,
+            body: `${plural(using.length)} ${using.length === 1 ? "is" : "are"} ${flag.label} now. ${using.length === 1 ? "It" : "They"} will become ${baseLabel(base)} too.`,
+            cta: "Change it",
+            onConfirm: () => void move(),
+          }).open();
+          d.setValue(flag.base); // until confirmed
+        });
+      });
+      row.addExtraButton((b) =>
+        b.setIcon("arrow-up").setTooltip("Move up").setDisabled(idx === 0).onClick(async () => {
+          settings.statusFlags = moveFlag(settings.statusFlags, flag.id, -1);
+          await save();
+          this.display();
+        })
+      );
+      row.addExtraButton((b) =>
+        b.setIcon("arrow-down").setTooltip("Move down").setDisabled(idx === settings.statusFlags.length - 1).onClick(async () => {
+          settings.statusFlags = moveFlag(settings.statusFlags, flag.id, 1);
+          await save();
+          this.display();
+        })
+      );
+      row.addExtraButton((b) =>
+        b.setIcon("trash").setTooltip("Remove this status").onClick(() => {
+          const remove = async () => {
+            for (const t of using) await this.plugin.store.clearFlag(t);
+            settings.statusFlags = settings.statusFlags.filter((f) => f.id !== flag.id);
+            settings.savedFilters = settings.savedFilters.map((f) => (f.flag === flag.id ? { ...f, flag: null } : f));
+            settings.menuHidden = settings.menuHidden.filter((k) => k !== `flag:${flag.id}`);
+            await save();
+            this.display();
+          };
+          if (!using.length) return void remove();
+          new ConfirmModal(this.app, {
+            title: `Remove ${flagText(flag)}?`,
+            body: `${plural(using.length)} ${using.length === 1 ? "has" : "have"} it. ${using.length === 1 ? "It stays" : "They stay"} ${baseLabel(flag.base)}, without the ${flag.label} label.`,
+            cta: "Remove",
+            onConfirm: () => void remove(),
+          }).open();
+        })
+      );
+    });
+
+    const add = (flag: StatusFlag) => {
+      settings.statusFlags = [...settings.statusFlags, flag];
+      void save().then(() => this.display());
+    };
+    new Setting(containerEl)
+      .setName("Add a status")
+      .setDesc("Its name is fixed into your notes as `flag:` when you add it; renaming it later keeps every task.")
+      .addButton((b) =>
+        b
+          .setButtonText("＋ Add a status")
+          .setCta()
+          .onClick(() =>
+            new PromptModal(this.app, {
+              title: "New status",
+              body: "What is it called? You can pick its icon and what it acts as next.",
+              placeholder: "In review",
+              cta: "Add",
+              onSubmit: (name) => {
+                const label = name.trim();
+                if (label) add({ id: uniqueFlagId(label, settings.statusFlags), label, icon: "🏷", base: "todo" });
+              },
+            }).open()
+          )
+      );
+    const ideas = FLAG_SUGGESTIONS.filter((f) => !settings.statusFlags.some((x) => x.id === f.id));
+    if (ideas.length) {
+      const row = new Setting(containerEl).setName("Or start from one of these").setDesc(ideas.map((f) => `${flagText(f)} acts as ${baseLabel(f.base)}`).join(" · "));
+      for (const f of ideas) row.addButton((b) => b.setButtonText(`＋ ${flagText(f)}`).onClick(() => add({ ...f })));
+    }
   }
 }

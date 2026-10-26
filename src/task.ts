@@ -6,6 +6,7 @@ import { formatSlot, parseSlots } from "./slots";
 import { parseEstimate } from "./estimate";
 import { parseRemindStart } from "./reminders";
 import { OnCompletion, Priority, RecurrenceAnchor, Status, Task } from "./types";
+import { flagFor, flagToWrite, StatusFlag } from "./statusFlags";
 
 export const TASK_TAG = "task";
 
@@ -70,13 +71,18 @@ export function hasTaskTag(tags: string[] | undefined): boolean {
   return tags.some((t) => t.replace(/^#/, "") === TASK_TAG);
 }
 
-/** Build a Task from a raw frontmatter record. `title` defaults to the note basename. */
-export function taskFromFrontmatter(fm: Record<string, unknown>, path: string, basename: string): Task {
+/**
+ * Build a Task from a raw frontmatter record. `title` defaults to the note basename. `flags` are
+ * the user's status flags from settings; without them a `flag:` is not read.
+ */
+export function taskFromFrontmatter(fm: Record<string, unknown>, path: string, basename: string, flags: readonly StatusFlag[] = []): Task {
   const title = typeof fm.title === "string" && fm.title.trim() ? fm.title.trim() : basename;
+  const status = asStatus(fm.status);
   return {
     path,
     title,
-    status: asStatus(fm.status),
+    status,
+    flag: flagFor(flags, fm.flag, status),
     scheduled: coerceISO(fm.scheduled),
     endDate: coerceISO(fm.endDate),
     startTime: asHM(fm.startTime),
@@ -139,6 +145,10 @@ export function applyTaskToFrontmatter(fm: Record<string, unknown>, task: Task):
   fm.tags = tags;
 
   fm.status = task.status;
+  // The Planner owns `flag:` — kept while it still matches the status, removed once it doesn't.
+  const flag = flagToWrite(task.flag, task.status);
+  if (flag) fm.flag = flag;
+  else delete fm.flag;
   fm.scheduled = task.scheduled ?? "";
   if (task.endDate) fm.endDate = task.endDate;
   else delete fm.endDate;

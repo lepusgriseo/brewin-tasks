@@ -63,3 +63,13 @@ export function fillSection(doc: string, heading: string, block: string): string
   const tail = after ? "\n\n" + after : "\n";
   return `${fm}${lead}${headText}\n\n${content}${tail}`;
 }
+
+/**
+ * True when a review note draws its data live through `00_Systems/Scripts/Review` (every
+ * weekly and monthly review since 2026-10-24). The insert-summary commands leave those alone:
+ * a frozen block appended under them would only repeat what the note already shows, and the
+ * note's own 📌 button freezes everything at once.
+ */
+export function isLiveReview(doc: string): boolean {
+  return /dv\.view\(\s*["']00_Systems\/Scripts\/Review["']/.test(doc);
+}

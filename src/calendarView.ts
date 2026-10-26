@@ -3,18 +3,17 @@ import { addDays, addMinutesHM, dayDelta, durationMinutes, formatHM, formatISO, 
 import { blockRange, CalView, stepAnchor, timeBox, viewTitle, visibleRange } from "./calendar";
 import { slotProgress } from "./slots";
 import { attachLongPressDrag, attachLongPressTap, hapticTick } from "./dragHandle";
-import { eventsToItems, groupItemsByDay, projectTasksToItems, tasksToItems } from "./calendarItem";
+import { groupItemsByDay } from "./calendarItem";
 import { allDaySpans, BarSegment, laneCount, packOverlaps, segmentsForWeek, taskSpans } from "./calendarLayout";
 import { EventModal } from "./eventModal";
 import type { DropIntent } from "./eventStore";
 import { CaptureModal } from "./captureModal";
 import { RecurrenceScopeModal } from "./recurrenceScopeModal";
 import { ConfirmModal } from "./confirmModal";
-import { ProjectTaskSource } from "./projectTasks";
-import { categoryColor, HOUR_PX_BY_SLOT, PROJECTS_CATEGORY } from "./settings";
+import { categoryColor, HOUR_PX_BY_SLOT } from "./settings";
 import { renderTimeBars } from "./timeBars";
 import { formatDuration, grandTotalMinutes, timeBudget, totalsByCategory } from "./timeTracking";
-import { expandRecurringTasks, monthPanelSections, MonthPanelSection } from "./views";
+import { monthPanelSections, MonthPanelSection } from "./views";
 import type { NewTaskFields } from "./taskStore";
 import { CalendarItem, EventItem, Task } from "./types";
 import type BrewinTasksPlugin from "./main";
@@ -42,7 +41,6 @@ export class CalendarView extends ItemView {
   private suppressClick = false;
   private snapEl: HTMLElement | null = null;
   private renderToken = 0;
-  private projectSource: ProjectTaskSource;
   /** Current-time indicators rendered this pass, nudged every minute. */
   private nowLines: HTMLElement[] = [];
   /** Re-fits month cells when the pane resizes. Replaced on every render. */
@@ -60,7 +58,6 @@ export class CalendarView extends ItemView {
     // except that a phone's "week" is three days: seven columns cannot be read at that width.
     const preferred = this.plugin.settings.defaultCalendarView;
     this.view = Platform.isPhone && preferred === "week" ? "3day" : preferred;
-    this.projectSource = new ProjectTaskSource(this.app, this.plugin.settings);
     // Move the line rather than re-rendering — a full redraw every minute would fight
     // with scrolling and drag operations.
     this.registerInterval(window.setInterval(() => this.positionNowLines(), 60_000));
@@ -112,32 +109,17 @@ export class CalendarView extends ItemView {
     // Gather all data first (project tasks are read async) before touching the DOM.
     const events = this.plugin.events.getEvents();
     const catShown = (cat: string) => !settings.hiddenCategories.includes(cat);
-    const items: CalendarItem[] = [];
-    let taskDaySpans: ReturnType<typeof taskSpans> = [];
-    if (settings.showTasksOnCalendar) {
-      // Recurring tasks are EXPANDED across the visible range, same as recurring events already
-      // are — otherwise there'd be nothing beyond the current occurrence to drag or edit.
-      const allTasks = this.plugin.store.getTasks();
-      const nonRecurring = allTasks.filter((t) => !t.recurrence);
-      items.push(
-        ...tasksToItems(nonRecurring, from, to, settings.slotBlockMinutes, { skipMultiDay: true }),
-        ...expandRecurringTasks(allTasks.filter((t) => !!t.recurrence), from, to, settings.slotBlockMinutes)
-      );
-      // A multi-day task ("Run 10k" Fri→Sun) gets ONE spanning bar, same as an all-day event —
-      // skipMultiDay above dropped its per-day chips so it isn't shown twice.
-      taskDaySpans = taskSpans(nonRecurring, from, to);
-    }
-    if (settings.showEventsOnCalendar) {
-      items.push(...eventsToItems(events, from, to).filter((it) => catShown(it.category)));
-    }
-    if (settings.showProjectTasksOnCalendar) {
-      const pts = await this.projectSource.getProjectTasks(true); // active projects only
-      items.push(...projectTasksToItems(pts, from, to, PROJECTS_CATEGORY));
-    }
-    // Brewin Fitness's plan — one source of truth for training instead of hand-made events.
-    items.push(...this.plugin.trainingItems(from, to).filter((it) => catShown(it.category)));
-    // Birthdays from the people notes' DOB:: lines.
-    items.push(...this.plugin.birthdayItems(from, to));
+    const items = await this.plugin.calendarItems(from, to, {
+      tasks: settings.showTasksOnCalendar,
+      events: settings.showEventsOnCalendar,
+      projectTasks: settings.showProjectTasksOnCalendar,
+      shown: catShown,
+    });
+    // A multi-day task ("Run 10k" Fri→Sun) gets ONE spanning bar, same as an all-day event —
+    // calendarItems dropped its per-day chips so it isn't shown twice.
+    const taskDaySpans = settings.showTasksOnCalendar
+      ? taskSpans(this.plugin.store.getTasks().filter((t) => !t.recurrence), from, to)
+      : [];
     if (token !== this.renderToken) return; // a newer render superseded this one
 
     const byDay = groupItemsByDay(items);

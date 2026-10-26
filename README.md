@@ -20,6 +20,11 @@ Its plugin id is `brewin-tasks`; it is called Brewin Planner because it grew pas
   saved filters, and the calendar and time report. Reorder or hide anything in it. On a phone, or in
   a narrow pane, it becomes a drawer behind ☰. Drag a task onto Today, Tomorrow, Next week, Someday,
   Inbox, a project or a context to send it there.
+- **Your own statuses.** Settings → *Statuses* adds statuses beyond To do, On hold, Someday and Done
+  (*In progress*, *Waiting on someone*, *Blocked*, *Cancelled*, or your own). Each acts as one of the
+  built-in four and behaves exactly like it, with its own icon and name on the task row, in the ⋯ menu
+  and the edit window, and in the menu's Statuses section (tap to list, drop a task to set). Notes keep
+  the built-in value in `status:` and the custom one in `flag:`, so queries on `status:` keep working.
 - **Projects, the way Project HQ runs them.** Each project shows its next action (`next:`) and
   deadline (`due:`) under its name. **✓ Done** writes the finished action into the note's log, offers
   to tick the step it came from, and asks what's next, with the note's `#next` steps first. A
@@ -65,6 +70,13 @@ dashboard menu* command, which opens the drawer on a phone). **✎ Edit menu** t
 for every entry; **Save this view…** keeps the current view, project, context and search under a name. Commands cover quick capture, opening each view, editing and scheduling the active
 task, archiving done tasks and past events, rescheduling everything overdue, auto-scheduling today,
 searching tasks, creating an event, and inserting a week's task summary into a review note.
+
+For notes, a read-only `api.day("YYYY-MM-DD")` returns what that day holds — the calendar's items
+(events with their repeats, training, birthdays, project steps), the weekly review's done / missed / open
+verdicts over that one day, and on today's date what is overdue and which projects have stalled. The
+vault's day note calls it from dataviewjs. `api.range("YYYY-MM-DD", "YYYY-MM-DD")` gives the same done /
+missed / open verdicts over any stretch of days, with its one-off events and birthdays, for the weekly
+and monthly review notes. Tasks carrying one of your own statuses include it as `flag`.
 
 Settings are extensive — the seven folders, the hub note, contexts and categories, what the calendar
 shows, the working window and slot size for auto-scheduling, layout choices, the whole reminder

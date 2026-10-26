@@ -10,6 +10,7 @@ import { formatSlot, nextOpenSlot, pruneSlotLog, slotProgress, withSlotToggled }
 import { hasContext } from "./contexts";
 import type { EditScope } from "./recurrenceScopeModal";
 import { Priority, Status, Task, TaskSlot } from "./types";
+import { flagRefusal, flagToWrite, StatusFlag } from "./statusFlags";
 
 export interface NewTaskFields {
   title: string;
@@ -70,7 +71,7 @@ export class TaskStore {
       const fm = (cache?.frontmatter ?? {}) as Record<string, unknown>;
       const tags = collectTags(fm, cache);
       if (!tags.includes(TASK_TAG)) continue;
-      const task = taskFromFrontmatter(fm, file.path, file.basename);
+      const task = taskFromFrontmatter(fm, file.path, file.basename, this.settings.statusFlags);
       task.parentPath = this.resolveParentPath(task.parent, file.path);
       task.dependsOnPaths = this.resolveLinkPaths(task.dependsOn, file.path);
       task.projectPath = this.resolveParentPath(task.project, file.path);
@@ -431,7 +432,7 @@ export class TaskStore {
     task: Task,
     // NOTE: no `title` — a task is renamed by renaming its file (see `rename`).
     f: Partial<
-      Pick<Task, "scheduled" | "startTime" | "endTime" | "due" | "priority" | "status" | "contexts" | "recurrence" | "recurrenceAnchor" | "parent" | "times" | "endDate" | "estimate" | "remind" | "remindStart" | "dependsOn" | "month" | "week" | "project">
+      Pick<Task, "scheduled" | "startTime" | "endTime" | "due" | "priority" | "status" | "flag" | "contexts" | "recurrence" | "recurrenceAnchor" | "parent" | "times" | "endDate" | "estimate" | "remind" | "remindStart" | "dependsOn" | "month" | "week" | "project">
     >
     /** @returns the task's path, which changes if the edit moved the note. */
   ): Promise<string> {
@@ -469,6 +470,16 @@ export class TaskStore {
         else delete fm.remind_start;
       }
       if (status !== undefined) fm.status = status;
+      // Marked done here (from the edit window's Status, or a flag standing for Done): it gets its
+      // completed date as a tick would give it, and loses it again if it is opened back up.
+      if (status === "done" && task.status !== "done" && !fm.completed) fm.completed = todayISO();
+      if (status !== undefined && status !== "done" && task.status === "done") delete fm.completed;
+      // A new flag, or a new status the old flag may no longer match.
+      if (f.flag !== undefined || status !== undefined) {
+        const flag = flagToWrite(f.flag !== undefined ? f.flag : task.flag, status ?? task.status);
+        if (flag) fm.flag = flag;
+        else delete fm.flag;
+      }
       if (f.contexts !== undefined) fm.contexts = f.contexts;
       if (f.parent !== undefined) {
         if (f.parent) fm.parent = f.parent;
@@ -627,8 +638,39 @@ export class TaskStore {
     await this.persist({ ...task, due: iso });
   }
 
+  /** A built-in status — which also takes off any status flag the task had. */
   async setStatus(task: Task, status: Status): Promise<void> {
     await this.persist(withStatus(task, status));
+  }
+
+  /**
+   * Give a task one of the user's status flags, and with it the status the flag stands for.
+   * Returns why not when it can't: a repeating task can't be flagged into Someday or Done, and a
+   * Done flag is refused while subtasks or dependencies are open, as ticking the task would be.
+   */
+  async setFlag(task: Task, flag: StatusFlag): Promise<string | null> {
+    const refused = flagRefusal(task, flag);
+    if (refused) return refused;
+    if (flag.base === "done") {
+      const check = this.checkComplete(task);
+      if (!check.ok) {
+        return [
+          check.open ? `has ${check.open} subtask${check.open === 1 ? "" : "s"} still open` : null,
+          check.blocked ? `is waiting on ${check.blocked} other task${check.blocked === 1 ? "" : "s"}` : null,
+        ]
+          .filter(Boolean)
+          .join(" and ");
+      }
+      await this.persist({ ...task, status: "done", completed: task.completed ?? todayISO(), flag });
+      return null;
+    }
+    await this.persist(withStatus(task, flag.base, flag));
+    return null;
+  }
+
+  /** Take a task's flag off, leaving its status as it is. */
+  async clearFlag(task: Task): Promise<void> {
+    await this.persist({ ...task, flag: null });
   }
 
   async setPriority(task: Task, priority: Priority): Promise<void> {
@@ -887,9 +929,9 @@ export class TaskStore {
  * day and time it was planned for — otherwise it would keep a date nobody intends to keep. A due
  * date stays: a real deadline is not something to quietly drop.
  */
-function withStatus(task: Task, status: Status): Task {
-  if (status !== "someday") return { ...task, status };
-  return { ...task, status, scheduled: null, startTime: null, endTime: null, endDate: null };
+function withStatus(task: Task, status: Status, flag: StatusFlag | null = null): Task {
+  if (status !== "someday") return { ...task, status, flag };
+  return { ...task, status, flag, scheduled: null, startTime: null, endTime: null, endDate: null };
 }
 
 function collectTags(fm: Record<string, unknown>, cache: ReturnType<App["metadataCache"]["getFileCache"]>): string[] {

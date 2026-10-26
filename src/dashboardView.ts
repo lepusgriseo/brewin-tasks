@@ -31,6 +31,7 @@ import {
   canHideView,
   contextKey,
   DashState,
+  flagKey,
   DROP_ONLY,
   linkedTaskCounts,
   matchesFilter,
@@ -49,6 +50,7 @@ import {
   viewKey,
 } from "./dashMenu";
 import { formatEstimate, parseEstimate, workload } from "./estimate";
+import { flagCounts, flagRefusal, flagText, StatusFlag } from "./statusFlags";
 import {
   attentionTasks,
   DASH_VIEWS,
@@ -100,6 +102,8 @@ function prettyDate(iso: string): string {
 
 export class DashboardView extends ItemView {
   private contextFilter: string | null = null;
+  /** A status flag's id: the list narrowed to tasks carrying it. */
+  private flagFilter: string | null = null;
   private groupBy: "date" | "context" = "date";
   /** Which dashboard view is showing. */
   private view: DashView = "today";
@@ -202,6 +206,8 @@ export class DashboardView extends ItemView {
     if (this.contextFilter && !filterableContexts(tasks).some((c) => c.value.toLowerCase() === this.contextFilter!.toLowerCase())) {
       this.contextFilter = null;
     }
+    // Likewise a flag taken out of settings.
+    if (this.flagFilter && !this.flag(this.flagFilter)) this.flagFilter = null;
 
     root.empty();
     this.drawer = this.isDrawerMode();
@@ -271,7 +277,12 @@ export class DashboardView extends ItemView {
   }
 
   private state(): DashState {
-    return { view: this.view, project: this.project, context: this.contextFilter, query: this.query, groupBy: this.groupBy };
+    return { view: this.view, project: this.project, context: this.contextFilter, flag: this.flagFilter, query: this.query, groupBy: this.groupBy };
+  }
+
+  /** One of the user's status flags, by id. */
+  private flag(id: string | null | undefined): StatusFlag | null {
+    return (id && this.plugin.settings.statusFlags.find((f) => f.id === id)) || null;
   }
 
   /** Change what the list shows, close the drawer, and start the new list from the top. */
@@ -279,6 +290,7 @@ export class DashboardView extends ItemView {
     if (next.view !== undefined) this.view = next.view;
     if (next.project !== undefined) this.project = next.project;
     if (next.context !== undefined) this.contextFilter = next.context;
+    if (next.flag !== undefined) this.flagFilter = next.flag;
     if (next.query !== undefined) this.query = next.query;
     if (next.groupBy !== undefined) this.groupBy = next.groupBy;
     this.menuOpen = false;
@@ -407,6 +419,12 @@ export class DashboardView extends ItemView {
       const chip = tools.createEl("button", { cls: "brewin-filter-chip", text: `@${this.contextFilter} ✕` });
       chip.setAttr("aria-label", `Stop filtering by @${this.contextFilter}`);
       chip.addEventListener("click", () => this.go({ context: null }));
+    }
+    const shownFlag = this.flag(this.flagFilter);
+    if (shownFlag) {
+      const chip = tools.createEl("button", { cls: "brewin-filter-chip", text: `${flagText(shownFlag)} ✕` });
+      chip.setAttr("aria-label", `Stop showing only ${shownFlag.label}`);
+      chip.addEventListener("click", () => this.go({ flag: null }));
     }
     if (!tools.childElementCount) tools.remove();
 
@@ -541,6 +559,33 @@ export class DashboardView extends ItemView {
       if (!contexts.length) ctxBody.createDiv({ cls: "brewin-menu-empty", text: "No contexts on open tasks." });
     }
 
+    // ── Statuses ── the user's own flags: tap to show only those tasks, drop a task to flag it.
+    const flagBody = this.menuSection(scroll, "statuses", "Statuses");
+    if (flagBody) {
+      const flags = s.statusFlags;
+      const counts = flagCounts(tasks, flags);
+      for (const f of flags) {
+        const key = flagKey(f.id);
+        if (!shows(key)) continue;
+        const on = this.flagFilter === f.id;
+        const item = this.menuItem(flagBody, {
+          icon: f.icon,
+          label: f.label,
+          count: counts.get(f.id) ?? null,
+          active: on,
+          hidden: hidden.has(key),
+          drop: key,
+          // Most flags stand for statuses that Today and Week leave out, so the filter shows All.
+          onClick: () => this.go(on ? { flag: null } : { view: "all", project: null, flag: f.id }),
+        });
+        if (editing) this.editControls(item, key);
+      }
+      if (!flags.length && !editing) {
+        const add = this.menuItem(flagBody, { icon: "＋", label: "Add your own…", onClick: () => this.plugin.openSettings() });
+        add.addClass("is-quiet");
+      }
+    }
+
     // ── Saved filters ──
     const filterBody = this.menuSection(scroll, "filters", "Saved filters");
     if (filterBody) {
@@ -550,7 +595,7 @@ export class DashboardView extends ItemView {
           icon: "🔖",
           label: f.name,
           active: matchesFilter(f, state),
-          onClick: () => this.go({ view: f.view, project: f.project, context: f.context, query: f.query, groupBy: f.groupBy }),
+          onClick: () => this.go({ view: f.view, project: f.project, context: f.context, flag: f.flag ?? null, query: f.query, groupBy: f.groupBy }),
         });
         if (editing) this.filterControls(item, f);
       }
@@ -811,7 +856,7 @@ export class DashboardView extends ItemView {
     new PromptModal(this.app, {
       title: "Save this view",
       body: "Keeps the view, project, context and search together under one name in the menu.",
-      initial: suggestFilterName(state, projectName),
+      initial: suggestFilterName(state, projectName, this.flag(state.flag)?.label ?? null),
       cta: "Save",
       onSubmit: async (name) => {
         const s = this.plugin.settings;
@@ -829,7 +874,7 @@ export class DashboardView extends ItemView {
   private async applyMenuDrop(key: string, task: Task): Promise<void> {
     const fresh = this.plugin.store.getByPath(task.path) ?? task;
     const today = todayISO();
-    const action = resolveDrop(key, fresh, today, this.plugin.settings.firstDayOfWeek);
+    const action = resolveDrop(key, fresh, today, this.plugin.settings.firstDayOfWeek, this.plugin.settings.statusFlags);
     if (!action) return;
     const store = this.plugin.store;
     const t = `“${fresh.title}”`;
@@ -859,6 +904,12 @@ export class DashboardView extends ItemView {
         new Notice(`${t} is now in ${name}.`);
         break;
       }
+      case "flag": {
+        const refused = await store.setFlag(fresh, action.flag);
+        new Notice(refused ? `${t} ${refused}.` : `${t} is now ${flagText(action.flag)}.`);
+        if (refused) return;
+        break;
+      }
     }
     this.render();
   }
@@ -876,8 +927,19 @@ export class DashboardView extends ItemView {
     let tasks = allTasks;
     // Case-insensitive, so filtering `obsidian` also catches a note tagged `Obsidian`.
     if (this.contextFilter) tasks = tasks.filter((t) => hasContext(t.contexts, this.contextFilter!));
+    const flag = this.flag(this.flagFilter);
+    if (flag) tasks = tasks.filter((t) => t.flag?.id === flag.id);
     // Search narrows whatever view is showing rather than replacing it.
     if (this.query.trim()) tasks = search(tasks, this.query);
+
+    // A flag standing for Done (Cancelled, Won't do…) gathers finished tasks, which no view lists:
+    // show them on their own, the most recently closed first.
+    if (flag?.base === "done" && !this.project) {
+      const closed = [...tasks].sort((a, b) => (b.completed ?? "").localeCompare(a.completed ?? "") || a.title.localeCompare(b.title));
+      if (!closed.length) root.createDiv({ cls: "brewin-empty", text: `Nothing is ${flag.label} yet.` });
+      else this.section(root, flagText(flag), closed);
+      return this.renderBulkBar();
+    }
 
     if (this.project) {
       this.renderProjectScope(root, tasks, today);
@@ -923,7 +985,7 @@ export class DashboardView extends ItemView {
     if (buckets.someday.length) this.renderSomeday(root, buckets.someday);
 
     // ── Project tasks ──
-    if (this.plugin.settings.showProjectTasks && !this.contextFilter) {
+    if (this.plugin.settings.showProjectTasks && !this.contextFilter && !this.flagFilter) {
       const src = new ProjectTaskSource(this.app, this.plugin.settings);
       const projTasks = await src.getProjectTasks();
       if (projTasks.length) {
@@ -987,6 +1049,7 @@ export class DashboardView extends ItemView {
     if (task.startTime) meta.createSpan({ text: task.startTime });
     if (task.due) meta.createSpan({ cls: "brewin-meta-due", text: `🚩 ${task.due}` });
     if (task.estimate) meta.createSpan({ cls: "brewin-meta-est", text: `⏱ ${formatEstimate(task.estimate)}` });
+    if (task.flag) meta.createSpan({ cls: "brewin-meta-flag", text: task.flag.icon, attr: { "aria-label": task.flag.label } });
     task.contexts.forEach((c) => meta.createSpan({ cls: "brewin-meta-ctx", text: `@${c}` }));
 
     el.addEventListener("click", () => {
@@ -2372,6 +2435,16 @@ export class DashboardView extends ItemView {
       const d = meta.createSpan({ cls: "brewin-meta-due", text: `🚩 ${task.due < today ? relativeDay(task.due, today) : `due ${relativeDay(task.due, today)}`}` });
       d.setAttr("title", `Due ${task.due}`);
     }
+    // The task's own status, when it has one — tap to see everything else that has it.
+    const flag = task.flag;
+    if (flag) {
+      const chip = meta.createSpan({ cls: "brewin-meta-flag", text: flagText(flag) });
+      chip.setAttr("aria-label", `Show only ${flag.label}`);
+      chip.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.go({ view: "all", project: null, flag: flag.id });
+      });
+    }
     task.contexts.forEach((c) => meta.createSpan({ cls: "brewin-meta-ctx", text: `@${c}` }));
     // The project it belongs to — tap to see the rest of that project. Not repeated on the project's own page.
     if (task.projectPath && task.projectPath !== this.project) {
@@ -2466,6 +2539,32 @@ export class DashboardView extends ItemView {
     new CaptureModal(this.app, this.plugin.store, this.plugin.settings, () => this.render(), fresh).open();
   }
 
+  /** The user's status flags, as menu items: each one this task could take, and taking its own off. */
+  private flagMenuItems(menu: Menu, task: Task): void {
+    const flags = this.plugin.settings.statusFlags.filter((f) => !flagRefusal(task, f));
+    if (!flags.length && !task.flag) return;
+    menu.addSeparator();
+    for (const f of flags) {
+      menu.addItem((i) =>
+        i.setTitle(flagText(f)).onClick(async () => {
+          const refused = await this.plugin.store.setFlag(task, f);
+          if (refused) new Notice(`“${task.title}” ${refused}.`);
+          this.render();
+        })
+      );
+    }
+    const own = task.flag;
+    if (own) {
+      menu.addItem((i) =>
+        i.setTitle(`Clear ${flagText(own)}`).setIcon("x").onClick(async () => {
+          await this.plugin.store.clearFlag(task);
+          this.render();
+        })
+      );
+    }
+    menu.addSeparator();
+  }
+
   private rowMenu(ev: MouseEvent, task: Task): void {
     const menu = new Menu();
     menu.addItem((i) => i.setTitle("Edit task…").setIcon("pencil").onClick(() => this.editTask(task)));
@@ -2488,6 +2587,7 @@ export class DashboardView extends ItemView {
     } else if (!task.recurrence && task.status !== "done") {
       menu.addItem((i) => i.setTitle("Move to Someday").setIcon("cloud").onClick(async () => { await this.plugin.store.setStatus(task, "someday"); this.render(); }));
     }
+    this.flagMenuItems(menu, task);
     menu.addItem((i) =>
       i.setTitle(task.project ? "Move to another project…" : "Move to project…").setIcon("folder-input").onClick(() => {
         new ProjectSuggestModal(this.app, this.projects.map(({ path, name }) => ({ path, name })), async (p) => {

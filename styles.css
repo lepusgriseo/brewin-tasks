@@ -1678,3 +1678,17 @@ body.is-phone .brewin-bday-row .brewin-icon-btn { opacity: 1; }
 }
 body.is-phone .brewin-proj-row { min-height: 44px; }
 body.is-phone .brewin-next-modal button.brewin-next-step { min-height: 44px; }
+
+/* 1.57 — the user's own statuses ("flags"): a quiet pill on the row, tap to list its tasks. */
+.brewin-meta-flag {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+  border-radius: 999px;
+  padding: 0 7px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.brewin-card-meta .brewin-meta-flag { padding: 0 4px; cursor: default; }
+.brewin-status-builtins { margin: 0.2em 0 0.8em; padding-left: 1.2em; }
+.brewin-flag-setting .setting-item-control { flex-wrap: wrap; justify-content: flex-end; }
+.brewin-flag-setting input.brewin-flag-icon { width: 3.2em; text-align: center; }

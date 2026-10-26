@@ -2,6 +2,7 @@ import { App, Modal, Notice, Setting, TFile } from "obsidian";
 import { pickDate } from "./datePicker";
 import { addDays, addMinutesHM, formatHM, formatISO, minutesOfDay, todayISO, todayUTC } from "./dates";
 import { Priority, Status, Task, TaskSlot } from "./types";
+import { BUILTIN_STATUSES, flagRefusal, flagText, StatusFlag } from "./statusFlags";
 import { TaskStore } from "./taskStore";
 import { BrewinSettings } from "./settings";
 import { RECUR_PRESETS } from "./recurrencePresets";
@@ -64,6 +65,8 @@ export class CaptureModal extends Modal {
   private originalBody = "";
   private recurrence = "";
   private status: Status = "todo";
+  /** One of the user's status flags, chosen in the Status dropdown — it sets `status` too. */
+  private flag: StatusFlag | null = null;
   private existing?: Task;
   /** Parent wikilink (e.g. `[[Ship v2]]`), or null for a top-level task. */
   private parent: string | null = null;
@@ -122,6 +125,7 @@ export class CaptureModal extends Modal {
       this.repeatCount = end.count ?? 10;
       this.times = [...(existing.times ?? [])];
       this.status = existing.status;
+      this.flag = existing.flag ?? null;
       this.parent = existing.parent;
       this.project = existing.project ?? null;
       this.projectTitle = existing.projectPath ? existing.projectPath.split("/").pop()?.replace(/\.md$/, "") ?? null : null;
@@ -322,17 +326,21 @@ export class CaptureModal extends Modal {
         .onChange((v) => (this.priority = v as Priority))
     );
 
-    // Status (edit mode only)
+    // Status (edit mode only): the four built in, then the user's own flags from settings.
     if (this.existing) {
-      new Setting(contentEl).setName("Status").addDropdown((d) =>
-        d
-          .addOption("todo", "To do")
+      const recurrence = this.existing.recurrence;
+      const flags = this.settings.statusFlags.filter((f) => !flagRefusal({ recurrence, flag: null }, f));
+      new Setting(contentEl).setName("Status").addDropdown((d) => {
+        d.addOption("todo", "To do")
           .addOption("hold", "On hold")
           .addOption("someday", "Someday — no date, no nagging")
-          .addOption("done", "Done")
-          .setValue(this.status)
-          .onChange((v) => (this.status = v as Status))
-      );
+          .addOption("done", "Done");
+        for (const f of flags) d.addOption(`flag:${f.id}`, `${flagText(f)} — ${BUILTIN_STATUSES.find((b) => b.id === f.base)?.label.toLowerCase()}`);
+        d.setValue(this.flag ? `flag:${this.flag.id}` : this.status).onChange((v) => {
+          this.flag = flags.find((f) => `flag:${f.id}` === v) ?? null;
+          this.status = this.flag ? this.flag.base : (v as Status);
+        });
+      });
     }
 
 
@@ -1068,6 +1076,7 @@ export class CaptureModal extends Modal {
         due: this.due,
         priority: this.priority,
         status: this.status,
+        flag: this.flag,
         contexts: this.contexts,
         parent: this.parent,
         project: this.project,

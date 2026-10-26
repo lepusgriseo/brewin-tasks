@@ -1,5 +1,7 @@
 // Pure data model — no Obsidian imports, so this stays unit-testable.
 
+import type { StatusFlag } from "./statusFlags";
+
 /**
  * `someday` is for things that will never get a date — a wishlist, a shopping list, an idea. It is
  * open (it can still be a parent or a dependency) but never active: no inbox nagging, no attention,
@@ -22,6 +24,8 @@ export interface Task {
   /** Display title — the note's basename (or an explicit `title` field). */
   title: string;
   status: Status;
+  /** One of the user's status flags (settings), shown while `status` is the one it stands for. */
+  flag?: StatusFlag | null;
   /** ISO "YYYY-MM-DD" do-date, or null. */
   scheduled: string | null;
   /**
