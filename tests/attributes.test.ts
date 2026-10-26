@@ -42,7 +42,10 @@ test("sanitizeAttributes: malformed and repeated dropped; defaults filled in", (
     { key: "x", kind: "nonsense" },
     null,
   ]);
-  assert.deepEqual(out, [cost, { key: "energy", label: "energy", icon: "🔘", kind: "choice", onRow: true, options: ["low", "high"] }]);
+  // A key the notes already spell their own way ("Energy") is kept as it is.
+  assert.deepEqual(out, [cost, { key: "Energy", label: "Energy", icon: "🔘", kind: "choice", onRow: true, options: ["low", "high"] }]);
+  // Keys YAML would read as structure fall back to a slug; Planner keys are refused in any case.
+  assert.deepEqual(sanitizeAttributes([{ key: "a: b", kind: "text" }, { key: "Status", kind: "text" }]).map((a) => a.key), ["a_b"]);
 });
 
 test("readAttr: each kind read from what a note might hold", () => {
@@ -136,4 +139,44 @@ test("saved filters carry the attribute and value", () => {
   assert.equal(matchesFilter({ ...s, attr: { key: "client", value: "dad" } }, s), false);
   assert.equal(matchesFilter({ ...s, attr: null }, s), false);
   assert.equal(suggestFilterName(s, null, null, "Client: Mum"), "All · Client: Mum");
+});
+
+// ── Properties the notes already have ───────────────────────────────────────
+
+import { findProperty, inferKind, scanProperties } from "../src/attributes.ts";
+import { taskFromFrontmatter } from "../src/task.ts";
+
+test("scanProperties: task notes and the rest apart; the Planner's own keys and attributes left out", () => {
+  const tasks = [{ status: "todo", Cost: 120, room: "Hall" }, { status: "done", cost: 45 }, { Cost: 9.5 }];
+  const others = [{ Cost: 3, Author: "[[Orwell]]" }, { author: "[[Huxley]]" }];
+  const uses = scanProperties(tasks, others, [room]);
+  assert.equal(uses.has("status"), false); // the Planner's
+  assert.equal(uses.has("room"), false); // already an attribute
+  assert.deepEqual(uses.get("cost"), { key: "Cost", taskNotes: 3, otherNotes: 1, samples: [120, 45, 9.5] }); // most common spelling
+  assert.deepEqual(uses.get("author"), { key: "Author", taskNotes: 0, otherNotes: 2, samples: ["[[Orwell]]", "[[Huxley]]"] });
+});
+
+test("findProperty: the same name whatever its case, spaces or punctuation", () => {
+  const uses = scanProperties([{ "Needs parts": true, Cost: 1 }], [], []);
+  assert.equal(findProperty(uses, "cost")?.key, "Cost");
+  assert.equal(findProperty(uses, "needs_parts")?.key, "Needs parts");
+  assert.equal(findProperty(uses, "Needs-Parts!")?.key, "Needs parts");
+  assert.equal(findProperty(uses, "Budget"), null);
+});
+
+test("inferKind: Obsidian's own type first, else what the values look like", () => {
+  assert.deepEqual(inferKind(["a", "b"], "number"), { kind: "number" });
+  assert.deepEqual(inferKind([true, false]), { kind: "bool" });
+  assert.deepEqual(inferKind([120, "£45.50", "1,200"]), { kind: "number" });
+  assert.deepEqual(inferKind(["2026-10-20", "2026-11-01T09:00"]), { kind: "date" });
+  assert.deepEqual(inferKind(["[[Mum]]", ["[[Dad]]"]]), { kind: "link" });
+  assert.deepEqual(inferKind(["low", "high", "low", "high"]), { kind: "choice", options: ["low", "high"] });
+  assert.deepEqual(inferKind(["Kitchen", "Hall"]), { kind: "text" }); // too few to call a list
+  assert.deepEqual(inferKind([]), { kind: "text" });
+});
+
+test("a task knows which attributes its note has — with a value or empty — and only those", () => {
+  const t = taskFromFrontmatter({ status: "todo", cost: 120, room: null }, "t.md", "t", [], [cost, room, energy]);
+  assert.deepEqual(t.attrKeys, ["cost", "room"]);
+  assert.deepEqual(t.attrs, { cost: 120 });
 });

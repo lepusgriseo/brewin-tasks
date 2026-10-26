@@ -34,6 +34,8 @@ export interface Task {
   timerStarted?: number | null;
   /** Values of the user's own attributes (settings), by attribute key; empty ones left out. */
   attrs?: Record<string, AttrValue>;
+  /** The attributes whose property the note has at all — with a value or empty. The task window shows these. */
+  attrKeys?: string[];
   /** ISO "YYYY-MM-DD" do-date, or null. */
   scheduled: string | null;
   /**

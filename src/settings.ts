@@ -1087,7 +1087,7 @@ export class BrewinSettingTab extends PluginSettingTab {
         .setButtonText("＋ Add attribute")
         .setCta()
         .onClick(() =>
-          new AttributeModal(this.app, settings.attributes, async (attr) => {
+          new AttributeModal(this.app, settings, async (attr) => {
             settings.attributes.push(attr);
             await save();
             this.display();

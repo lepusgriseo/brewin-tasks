@@ -31,7 +31,10 @@ Its plugin id is `brewin-tasks`; it is called Brewin Planner because it grew pas
 - **Attributes of your own.** "＋ Add attribute…" in any task's window (or Settings → *Attributes*) makes
   a field every task then offers: text, a number (with a unit such as £ or km), a date, a choice from your
   own list, yes/no, or a link to a note. Values are filled in from the task window and saved as a property
-  on the task's note under a key fixed when the attribute is made. Each can show as a chip on task rows, has
+  on the task's note under a key fixed when the attribute is made. A new attribute is first checked
+  against the properties your notes already have: one of the same name is adopted (its spelling kept,
+  its kind guessed from Obsidian's type or its values), so existing values show at once. A task's window
+  shows only the attributes its note has; "＋ Add attribute…" puts another on it, ✕ takes one off. Each can show as a chip on task rows, has
   its own section in the dashboard menu listing its values (tap to filter; drop a task on a value to set
   it), can group All, and is found by search.
 - **A focus timer on every task.** ⏱️ on a task (or its ⋯ menu, its edit window, or the *Focus timer…*

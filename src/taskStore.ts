@@ -670,8 +670,9 @@ export class TaskStore {
   }
 
   /**
-   * Set the user's own attributes on a task: a value per key, null to clear it. Attributes are
-   * frontmatter properties nothing else in the Planner writes, so this touches only those keys.
+   * Set the user's own attributes on a task: a value per key; "" to keep the property on the note
+   * but empty (a yes/no one as "no"); null to take the property off. Attributes are frontmatter
+   * properties nothing else in the Planner writes, so this touches only those keys.
    */
   async setAttrs(path: string, values: Record<string, AttrValue | null>): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(path);
@@ -682,6 +683,7 @@ export class TaskStore {
         const attr = defs.get(key);
         if (!attr) continue;
         if (v === null) delete fm[key];
+        else if (v === "") fm[key] = attr.kind === "bool" ? false : null;
         else fm[key] = attrToFrontmatter(attr, v);
       }
       fm.modified = todayISO();

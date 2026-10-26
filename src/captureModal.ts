@@ -1,9 +1,9 @@
-import { App, Modal, Notice, Setting, TFile } from "obsidian";
+import { App, Menu, Modal, Notice, Setting, TFile } from "obsidian";
 import { pickDate } from "./datePicker";
 import { addDays, addMinutesHM, formatHM, formatISO, minutesOfDay, todayISO, todayUTC } from "./dates";
 import { Priority, Status, Task, TaskSlot } from "./types";
 import { BUILTIN_STATUSES, flagRefusal, flagText, StatusFlag } from "./statusFlags";
-import { AttrValue, linkName, parseAttrInput, TaskAttribute } from "./attributes";
+import { AttrValue, linkName, parseAttrInput, readAttr, TaskAttribute } from "./attributes";
 import { AttributeModal } from "./attributeModal";
 import { TripSuggestModal } from "./tripSuggestModal";
 import { TaskStore } from "./taskStore";
@@ -40,6 +40,8 @@ export class CaptureModal extends Modal {
   /** The user's own attributes on this task: current values, and which ones were changed here. */
   private attrValues: Record<string, AttrValue | null> = {};
   private attrTouched = new Set<string>();
+  /** The attributes this task's note has (and any added here) — the only ones the window shows. */
+  private attrShown = new Set<string>();
   private title = "";
   private scheduled: string | null = null;
   private due: string | null = null;
@@ -137,6 +139,7 @@ export class CaptureModal extends Modal {
       this.status = existing.status;
       this.flag = existing.flag ?? null;
       this.attrValues = { ...(existing.attrs ?? {}) };
+      this.attrShown = new Set(existing.attrKeys ?? Object.keys(existing.attrs ?? {}));
       this.parent = existing.parent;
       this.project = existing.project ?? null;
       this.projectTitle = existing.projectPath ? existing.projectPath.split("/").pop()?.replace(/\.md$/, "") ?? null : null;
@@ -1155,33 +1158,72 @@ export class CaptureModal extends Modal {
     this.close();
   }
 
-  /** Write the attribute values changed in this window — only those, so nothing else is rewritten. */
+  /**
+   * Write the attributes changed in this window — only those, so nothing else is rewritten. One added
+   * here but left empty is still written (empty), so the note has it; one taken off is removed.
+   */
   private async saveAttrs(path: string): Promise<void> {
     const changes: Record<string, AttrValue | null> = {};
-    for (const key of this.attrTouched) changes[key] = this.attrValues[key] ?? null;
+    for (const key of this.attrTouched) changes[key] = this.attrShown.has(key) ? this.attrValues[key] ?? "" : null;
     await this.store.setAttrs(path, changes);
   }
 
-  /** The "Your attributes" rows: one control per attribute, by its kind. */
+  /** "Your attributes": a row for each one this task's note has, and "＋ Add attribute…" for others. */
   private renderAttrs(host: HTMLElement): void {
     host.empty();
     const attrs = this.settings.attributes;
-    if (attrs.length) host.createDiv({ cls: "brewin-attrs-head", text: "Your attributes" });
-    for (const a of attrs) this.attrRow(host, a);
+    const shown = attrs.filter((a) => this.attrShown.has(a.key));
+    if (shown.length) host.createDiv({ cls: "brewin-attrs-head", text: "Your attributes" });
+    for (const a of shown) this.attrRow(host, a);
     const add = host.createEl("button", { cls: "brewin-attrs-add", text: "＋ Add attribute…" });
-    add.addEventListener("click", () =>
-      new AttributeModal(this.app, attrs, async (attr) => {
-        this.settings.attributes.push(attr);
-        await CaptureModal.saveSettings?.();
-        new Notice(`“${attr.label}” added — every task now offers it.`);
-        this.renderAttrs(host);
-      }).open()
-    );
+    add.addEventListener("click", (e) => {
+      const others = attrs.filter((a) => !this.attrShown.has(a.key));
+      // Nothing to choose from yet: straight to making one.
+      if (!others.length) return this.newAttribute(host);
+      const menu = new Menu();
+      for (const a of others) {
+        menu.addItem((i) =>
+          i.setTitle(`${a.icon} ${a.label}`).onClick(() => {
+            this.attrShown.add(a.key);
+            this.attrTouched.add(a.key);
+            this.renderAttrs(host);
+          })
+        );
+      }
+      menu.addSeparator();
+      menu.addItem((i) => i.setTitle("New attribute…").setIcon("plus").onClick(() => this.newAttribute(host)));
+      menu.showAtMouseEvent(e);
+    });
+  }
+
+  /** Make an attribute — checked against the notes' properties first — and put it on this task. */
+  private newAttribute(host: HTMLElement): void {
+    new AttributeModal(this.app, this.settings, async (attr) => {
+      this.settings.attributes.push(attr);
+      await CaptureModal.saveSettings?.();
+      this.attrShown.add(attr.key);
+      this.attrTouched.add(attr.key);
+      // A property this note already had shows its value at once.
+      const fm = this.existing ? (this.app.metadataCache.getFileCache(this.app.vault.getAbstractFileByPath(this.existing.path) as TFile)?.frontmatter as Record<string, unknown> | undefined) : undefined;
+      const v = fm ? readAttr(attr, fm[attr.key]) : null;
+      if (v !== null) this.attrValues[attr.key] = v;
+      new Notice(`“${attr.label}” added — every task's window now offers it.`);
+      this.renderAttrs(host);
+    }).open();
   }
 
   private attrRow(host: HTMLElement, a: TaskAttribute): void {
     const row = new Setting(host).setName(`${a.icon} ${a.label}`);
     row.settingEl.addClass("brewin-attr-row");
+    // Take it off this task: the property is removed from the note on save.
+    const off = row.nameEl.createSpan({ cls: "brewin-attr-off clickable-icon", text: "✕" });
+    off.setAttr("aria-label", `Take ${a.label} off this task`);
+    off.addEventListener("click", () => {
+      this.attrShown.delete(a.key);
+      this.attrTouched.add(a.key);
+      delete this.attrValues[a.key];
+      this.renderAttrs(host);
+    });
     const cur = this.attrValues[a.key] ?? null;
     const set = (v: AttrValue | null) => {
       this.attrValues[a.key] = v;
@@ -1241,13 +1283,6 @@ export class CaptureModal extends Modal {
             }, `${a.label}: choose a note…`).open();
           })
         );
-        if (cur !== null)
-          row.addExtraButton((b) =>
-            b.setIcon("x").setTooltip(`Clear ${a.label}`).onClick(() => {
-              set(null);
-              this.renderAttrs(host);
-            })
-          );
         break;
       default:
         row.addText((t) => t.setValue(cur === null ? "" : String(cur)).onChange((v) => set(v.trim() || null)));

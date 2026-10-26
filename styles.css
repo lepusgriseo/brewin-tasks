@@ -1814,3 +1814,11 @@ body.is-phone .brewin-kanban { scroll-snap-type: x mandatory; }
 .brewin-done-today .brewin-task-link { text-decoration: line-through; text-decoration-color: var(--text-faint); }
 .brewin-done-recurring .brewin-task-meta { color: var(--text-muted); font-size: var(--font-ui-smaller); }
 body.is-phone .brewin-toolbar .brewin-board-pick { flex: 0 0 auto; max-width: 48%; }
+.brewin-attr-row .setting-item-name { display: flex; align-items: center; gap: 6px; }
+.brewin-attr-off { color: var(--text-faint); font-size: var(--font-ui-smaller); padding: 2px 6px; cursor: pointer; }
+.brewin-attr-off:hover { color: var(--text-error); }
+.brewin-attr-found { font-size: var(--font-ui-small); margin: -4px 0 6px; }
+.brewin-attr-found-yes { color: var(--text-success); }
+.brewin-attr-found-none { color: var(--text-muted); }
+.brewin-attr-found-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; }
+body.is-phone .brewin-attr-off { min-width: 36px; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; }

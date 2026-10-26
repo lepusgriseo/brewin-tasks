@@ -6,7 +6,10 @@
 export type AttrKind = "text" | "number" | "date" | "choice" | "bool" | "link";
 
 export interface TaskAttribute {
-  /** The frontmatter key: lower case, underscores — `needs_parts`. Fixed once made. */
+  /**
+   * The frontmatter key. A new name becomes lower case with underscores (`needs_parts`); a property
+   * the notes already use keeps its own spelling (`Cost`). Fixed once made.
+   */
   key: string;
   label: string;
   /** An emoji or short symbol for chips and the menu. */
@@ -62,6 +65,9 @@ export function uniqueAttrKey(label: string, existing: readonly TaskAttribute[])
 
 const KINDS = ATTR_KINDS.map((k) => k.kind);
 
+/** A property name usable as it stands: not empty, and nothing YAML would read as structure. */
+const PLAIN_KEY = /^[^:#\n\[\]{}"'`|>&*!%@,]+$/;
+
 /** Saved attributes, as settings hold them — malformed entries dropped, a key kept once. */
 export function sanitizeAttributes(raw: unknown): TaskAttribute[] {
   if (!Array.isArray(raw)) return [];
@@ -69,9 +75,10 @@ export function sanitizeAttributes(raw: unknown): TaskAttribute[] {
   for (const r of raw) {
     if (!r || typeof r !== "object") continue;
     const o = r as Record<string, unknown>;
-    const key = attrKeyFrom(String(o.key ?? ""));
+    const given = String(o.key ?? "").trim();
+    const key = PLAIN_KEY.test(given) ? given : attrKeyFrom(given);
     const kind = KINDS.includes(o.kind as AttrKind) ? (o.kind as AttrKind) : null;
-    if (!key || !kind || RESERVED_KEYS.has(key) || out.some((a) => a.key === key)) continue;
+    if (!key || !kind || RESERVED_KEYS.has(key.toLowerCase()) || out.some((a) => a.key.toLowerCase() === key.toLowerCase())) continue;
     const a: TaskAttribute = {
       key,
       label: String(o.label ?? "").trim() || key,
@@ -249,4 +256,85 @@ export function attrToFrontmatter(attr: TaskAttribute, v: AttrValue): AttrValue 
   if (attr.kind === "number") return Number(v);
   if (attr.kind === "bool") return !!v;
   return String(v);
+}
+
+// ── Properties the notes already have ────────────────────────────────────────
+// Making an attribute first looks for a property of the same name: on task notes its values will
+// show straight away, and anywhere in the vault Obsidian already holds one type for that name.
+
+export interface PropertyUse {
+  /** The name as the notes spell it — the most common spelling when they differ. */
+  key: string;
+  /** Task notes carrying it, and other notes in the vault. */
+  taskNotes: number;
+  otherNotes: number;
+  /** A few values from task notes (else from other notes), to show and to guess the kind from. */
+  samples: unknown[];
+}
+
+/**
+ * Every property on the notes that isn't the Planner's own or already an attribute, by lower-case
+ * name. `tasks` and `others` are frontmatter records.
+ */
+export function scanProperties(
+  tasks: readonly Record<string, unknown>[],
+  others: readonly Record<string, unknown>[],
+  attributes: readonly TaskAttribute[]
+): Map<string, PropertyUse> {
+  const taken = new Set(attributes.map((a) => a.key.toLowerCase()));
+  const out = new Map<string, PropertyUse & { spellings: Map<string, number>; otherSamples: unknown[] }>();
+  const add = (fm: Record<string, unknown>, isTask: boolean) => {
+    for (const [k, v] of Object.entries(fm)) {
+      const lower = k.toLowerCase();
+      if (RESERVED_KEYS.has(lower) || taken.has(lower) || !PLAIN_KEY.test(k)) continue;
+      const u = out.get(lower) ?? { key: k, taskNotes: 0, otherNotes: 0, samples: [], spellings: new Map(), otherSamples: [] };
+      u.spellings.set(k, (u.spellings.get(k) ?? 0) + 1);
+      if (isTask) u.taskNotes++;
+      else u.otherNotes++;
+      const pool = isTask ? u.samples : u.otherSamples;
+      if (v != null && v !== "" && pool.length < 12) pool.push(v);
+      out.set(lower, u);
+    }
+  };
+  for (const fm of tasks) add(fm, true);
+  for (const fm of others) add(fm, false);
+  const result = new Map<string, PropertyUse>();
+  for (const [lower, u] of out) {
+    const key = [...u.spellings].sort((a, b) => b[1] - a[1])[0][0];
+    result.set(lower, { key, taskNotes: u.taskNotes, otherNotes: u.otherNotes, samples: u.samples.length ? u.samples : u.otherSamples });
+  }
+  return result;
+}
+
+/** The property a new attribute's name refers to: the same name, ignoring case, spaces and punctuation. */
+export function findProperty(uses: ReadonlyMap<string, PropertyUse>, label: string): PropertyUse | null {
+  const want = label.trim().toLowerCase();
+  if (!want) return null;
+  if (uses.has(want)) return uses.get(want)!;
+  const slug = attrKeyFrom(label);
+  for (const [lower, u] of uses) if (attrKeyFrom(lower) === slug) return u;
+  return null;
+}
+
+/** Obsidian's own type for a property, where it has assigned one, as an attribute kind. */
+const OBSIDIAN_TYPES: Record<string, AttrKind> = { checkbox: "bool", number: "number", date: "date", datetime: "date" };
+
+/**
+ * The kind a property's values look like: Obsidian's assigned type first (it holds one per name for
+ * the whole vault), else the values — yes/no, numbers, dates, links, a handful of repeated words (a
+ * choice, with those as its options), or text.
+ */
+export function inferKind(samples: readonly unknown[], obsidianType?: string | null): { kind: AttrKind; options?: string[] } {
+  if (obsidianType && OBSIDIAN_TYPES[obsidianType]) return { kind: OBSIDIAN_TYPES[obsidianType] };
+  const vals = samples.flatMap((v) => (Array.isArray(v) ? v : [v])).filter((v) => v != null && v !== "");
+  if (!vals.length) return { kind: "text" };
+  if (vals.every((v) => typeof v === "boolean" || /^(true|false)$/i.test(String(v)))) return { kind: "bool" };
+  if (vals.every((v) => typeof v === "number" || /^-?[£$€]?\d[\d,]*(\.\d+)?$/.test(String(v).trim()))) return { kind: "number" };
+  if (vals.every((v) => /^\d{4}-\d{2}-\d{2}/.test(String(v)))) return { kind: "date" };
+  if (vals.every((v) => /^\[\[.+\]\]$/.test(String(v).trim()))) return { kind: "link" };
+  const distinct = [...new Set(vals.map((v) => String(v).trim()))];
+  if (vals.length >= 3 && distinct.length <= 6 && distinct.length < vals.length && distinct.every((d) => d.length <= 24)) {
+    return { kind: "choice", options: distinct };
+  }
+  return { kind: "text" };
 }

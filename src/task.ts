@@ -96,6 +96,7 @@ export function taskFromFrontmatter(
     timerStarted: parseStarted(fm.timer_started),
     // The user's own attributes — written by the task window, never by applyTaskToFrontmatter.
     attrs: readAttrs(attributes, fm),
+    attrKeys: attributes.filter((a) => Object.prototype.hasOwnProperty.call(fm, a.key)).map((a) => a.key),
     scheduled: coerceISO(fm.scheduled),
     endDate: coerceISO(fm.endDate),
     startTime: asHM(fm.startTime),
