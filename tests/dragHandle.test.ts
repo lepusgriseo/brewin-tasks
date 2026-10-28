@@ -34,9 +34,21 @@ function fireHold(): void {
   const due = timers.splice(0, timers.length);
   due.forEach((t) => t.fn());
 }
-function dispatch(type: string, x: number, y: number): void {
-  const ev = { clientX: x, clientY: y, preventDefault() {} };
+function dispatch(type: string, x: number, y: number): { prevented: boolean; stopped: boolean } {
+  const ev = {
+    clientX: x,
+    clientY: y,
+    prevented: false,
+    stopped: false,
+    preventDefault() {
+      this.prevented = true;
+    },
+    stopPropagation() {
+      this.stopped = true;
+    },
+  };
   [...(docHandlers.get(type) ?? [])].forEach((h) => h(ev));
+  return ev;
 }
 
 function harness() {
@@ -327,4 +339,20 @@ test("firing the long-press cleans up its listeners, so nothing leaks", () => {
   assert.equal(docHandlers.get("pointermove")?.size ?? 0, 0);
   assert.equal(docHandlers.get("pointerup")?.size ?? 0, 0);
   assert.equal(docHandlers.get("pointercancel")?.size ?? 0, 0);
+});
+
+test("while a drag is armed, the long-press context menu is held back — and released after", () => {
+  reset();
+  const h = harness();
+  h.down(10, 10);
+  assert.equal(dispatch("contextmenu", 10, 10).prevented, false); // a plain press: menus as usual
+  fireHold(); // armed
+  const menu = dispatch("contextmenu", 10, 10);
+  assert.ok(menu.prevented && menu.stopped, "blocked mid-drag");
+  dispatch("pointermove", 60, 60);
+  dispatch("pointerup", 60, 60);
+  assert.deepEqual(h.log, ["arm", "move 60,60", "drop 60,60"]);
+  assert.equal(dispatch("contextmenu", 60, 60).prevented, true, "still held for the lift's own menu event");
+  fireHold(); // the release timer
+  assert.equal(dispatch("contextmenu", 60, 60).prevented, false, "and then menus work again");
 });

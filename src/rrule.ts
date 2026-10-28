@@ -232,10 +232,17 @@ export function stripEnd(rrule: string): string {
 /** All occurrence dates in [from, to] inclusive. Used to place recurring items on the calendar. */
 export function occurrencesInRange(rule: RRule, start: Date, from: Date, to: Date): Date[] {
   const out: Date[] = [];
-  let cursor = from < start ? new Date(start.getTime()) : new Date(from.getTime());
+  // COUNT counts from the series' start, so with one the days before `from` are counted, not kept —
+  // without that, a series ended "after N times" ran on across the calendar for ever.
+  let cursor = rule.count == null && from > start ? new Date(from.getTime()) : new Date(start.getTime());
+  let seen = 0;
   let guard = 0;
   while (cursor <= to && guard < MAX_SCAN_DAYS) {
-    if (matches(rule, start, cursor)) out.push(new Date(cursor.getTime()));
+    if (matches(rule, start, cursor)) {
+      seen++;
+      if (rule.count != null && seen > rule.count) break;
+      if (cursor >= from) out.push(new Date(cursor.getTime()));
+    }
     cursor = addDays(cursor, 1);
     guard++;
   }

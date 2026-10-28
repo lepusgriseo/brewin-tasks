@@ -20,7 +20,7 @@ export interface AdvanceResult {
  * series if there's no next occurrence. Does NOT touch `completeInstances` — the two callers
  * differ only in whether the occurrence counts as done or was simply moved elsewhere.
  */
-function advancePast(task: Task, occurrenceISO: string, todayISO: string): AdvanceResult {
+function advancePast(task: Task, occurrenceISO: string, todayISO: string, restartFrom?: string): AdvanceResult {
   const rule = parseRRule(task.recurrence);
   const next = { ...task };
 
@@ -35,8 +35,10 @@ function advancePast(task: Task, occurrenceISO: string, todayISO: string): Advan
   const anchorISO = anchorField === "due" ? task.due : task.scheduled;
   const anchorDate = parseISO(anchorISO) ?? parseISO(occurrenceISO)!;
   const fallback = parseISO(todayISO)!;
-  const start = effectiveStart(rule, anchorDate, fallback);
-  const from = parseISO(occurrenceISO) ?? anchorDate;
+  // A repeat counted from completion starts again from the day it was done (`restartFrom`).
+  const restart = restartFrom ? parseISO(restartFrom) : null;
+  const start = restart ?? effectiveStart(rule, anchorDate, fallback);
+  const from = restart ?? parseISO(occurrenceISO) ?? anchorDate;
 
   const nextDate = nextAfter(rule, start, from);
 
@@ -76,7 +78,17 @@ export function completeRecurringOccurrence(task: Task, occurrenceISO: string, t
   const completeInstances = task.completeInstances.includes(occurrenceISO)
     ? task.completeInstances
     : [...task.completeInstances, occurrenceISO];
-  return advancePast({ ...task, completeInstances }, occurrenceISO, todayISO);
+  return advancePast({ ...task, completeInstances }, occurrenceISO, todayISO, task.recurrenceFrom === "completion" ? todayISO : undefined);
+}
+
+/**
+ * "Skip this time": the occurrence is let go — not done, and not missed either (it joins the
+ * exceptions, which the reviews leave out) — and the task moves on to its next date. A repeat
+ * counted from completion counts from today, as though this round had been done.
+ */
+export function skipThisTime(task: Task, occurrenceISO: string, todayISO: string): AdvanceResult {
+  const exdates = task.exdates.includes(occurrenceISO) ? task.exdates : [...task.exdates, occurrenceISO].sort();
+  return advancePast({ ...task, exdates }, occurrenceISO, todayISO, task.recurrenceFrom === "completion" ? todayISO : undefined);
 }
 
 /**

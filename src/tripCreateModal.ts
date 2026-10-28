@@ -32,6 +32,7 @@ export class TripCreateModal extends Modal {
       type: "text",
       cls: "brewin-capture-title",
       placeholder: "Destination",
+      attr: { "aria-label": "Destination" },
     });
     destInput.addEventListener("input", () => (this.destination = destInput.value));
     window.setTimeout(() => destInput.focus(), 0);

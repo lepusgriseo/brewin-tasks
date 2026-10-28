@@ -1,7 +1,9 @@
 import { App, TFile } from "obsidian";
 import { BrewinSettings } from "./settings";
-import { coerceISO } from "./dates";
-import { stepText } from "./projects";
+import { todayISO } from "./dates";
+import { InlineChanges, parseInlineTask, writeInlineTask } from "./inlineTask";
+import { writeText } from "./undo";
+import { forgetNoteTasks } from "./noteTasks";
 
 /** A checkbox task surfaced from a #project note, with the info needed to write back. */
 export interface ProjectTask {
@@ -13,14 +15,10 @@ export interface ProjectTask {
   scheduled: string | null;
   due: string | null;
   isNext: boolean;
+  /** A checkbox task from a note outside the projects (noteTasks.ts), not a project's step. */
+  fromNote?: boolean;
 }
 
-const OPEN_CHECKBOX = /^(\s*)- \[ \]\s+(.*)$/;
-
-function extractField(text: string, field: string): string | null {
-  const m = new RegExp(`\\[${field}::\\s*([^\\]]+)\\]`).exec(text);
-  return m ? coerceISO(m[1].trim()) : null;
-}
 
 export class ProjectTaskSource {
   constructor(private app: App, private settings: BrewinSettings) {}
@@ -70,47 +68,66 @@ export class ProjectTaskSource {
       const content = await this.app.vault.cachedRead(file);
       const lines = content.split("\n");
       lines.forEach((raw, i) => {
-        const m = OPEN_CHECKBOX.exec(raw);
-        if (!m) return;
-        const body = m[2];
+        // Dated either way the vault writes it: `[due:: …]` fields or the Tasks plugin's 📅 ⏳.
+        const t = parseInlineTask(raw);
+        if (!t || t.mark !== " ") return;
         out.push({
           projectPath: file.path,
           projectName: file.basename,
           line: i,
           raw,
-          text: stepText(body),
-          scheduled: extractField(body, "scheduled"),
-          due: extractField(body, "due"),
-          isNext: /#next\b/.test(body),
+          text: t.text,
+          scheduled: t.scheduled,
+          due: t.due,
+          isNext: t.next,
         });
       });
     }
     return out;
   }
 
-  private async rewriteLine(pt: ProjectTask, transform: (line: string) => string): Promise<void> {
+  /**
+   * Rewrite a step's line — or take it out, when `transform` gives null. One atomic read-and-write
+   * (it used to read, then write the whole note back, losing anything written in between), recorded
+   * for Undo. False when the line is no longer in the note as it was read.
+   */
+  private async rewriteLine(pt: ProjectTask, transform: (line: string) => string | null): Promise<boolean> {
     const file = this.app.vault.getAbstractFileByPath(pt.projectPath);
-    if (!(file instanceof TFile)) return;
-    const content = await this.app.vault.read(file);
-    const lines = content.split("\n");
-    // Prefer the recorded line index if it still matches; otherwise find the exact raw line.
-    let idx = pt.line;
-    if (lines[idx] !== pt.raw) idx = lines.indexOf(pt.raw);
-    if (idx < 0) return;
-    lines[idx] = transform(lines[idx]);
-    await this.app.vault.modify(file, lines.join("\n"));
-  }
-
-  async complete(pt: ProjectTask): Promise<void> {
-    await this.rewriteLine(pt, (line) => line.replace(/- \[ \]/, "- [x]"));
-  }
-
-  /** Set or replace an inline date field on the project checkbox line. */
-  async setDate(pt: ProjectTask, field: "scheduled" | "due", iso: string | null): Promise<void> {
-    await this.rewriteLine(pt, (line) => {
-      let out = line.replace(new RegExp(`\\s*\\[${field}::\\s*[^\\]]*\\]`), "");
-      if (iso) out = out.replace(/\s*$/, "") + ` [${field}:: ${iso}]`;
-      return out;
+    if (!(file instanceof TFile)) return false;
+    let found = false;
+    await writeText(this.app, file, (content) => {
+      const lines = content.split("\n");
+      // The recorded line if it still says the same; otherwise the same text wherever it now is.
+      const idx = lines[pt.line] === pt.raw ? pt.line : lines.indexOf(pt.raw);
+      if (idx < 0) return content;
+      found = true;
+      const next = transform(lines[idx]);
+      if (next === null) lines.splice(idx, 1);
+      else lines[idx] = next;
+      return lines.join("\n");
     });
+    // A note task's note is read again on the redraw that follows, not served from before the write.
+    forgetNoteTasks(pt.projectPath);
+    return found;
+  }
+
+  /** Tick a step, with today's completion date as the line writes dates (`[completion:: …]` or ✅). */
+  async complete(pt: ProjectTask): Promise<boolean> {
+    return this.rewriteLine(pt, (line) => writeInlineTask(line, { done: true }, todayISO()));
+  }
+
+  /** Set or replace an inline date on the step's line, in the line's own style. */
+  async setDate(pt: ProjectTask, field: "scheduled" | "due", iso: string | null): Promise<boolean> {
+    return this.rewriteLine(pt, (line) => writeInlineTask(line, { [field]: iso }, todayISO()));
+  }
+
+  /** Change a step's words, dates or `#next` — the step window's Save. */
+  async edit(pt: ProjectTask, changes: InlineChanges): Promise<boolean> {
+    return this.rewriteLine(pt, (line) => writeInlineTask(line, changes, todayISO()));
+  }
+
+  /** Take a step's line out of its note. */
+  async remove(pt: ProjectTask): Promise<boolean> {
+    return this.rewriteLine(pt, () => null);
   }
 }

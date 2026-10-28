@@ -7,6 +7,9 @@ export type DeleteChoice = "task-only" | "with-subtasks";
  * never ambiguous what happens to the children.
  */
 export class DeleteTaskModal extends Modal {
+  /** A choice was made — closing after it isn't a cancel. */
+  private chosen = false;
+
   constructor(
     app: App,
     private title: string,
@@ -28,6 +31,7 @@ export class DeleteTaskModal extends Modal {
     const pick = (label: string, choice: DeleteChoice, warn = false) => {
       const b = contentEl.createEl("button", { text: label, cls: "brewin-scope-btn" + (warn ? " brewin-danger" : "") });
       b.addEventListener("click", () => {
+        this.chosen = true;
         this.onChoose(choice);
         this.close();
       });
@@ -42,13 +46,14 @@ export class DeleteTaskModal extends Modal {
     }
 
     const cancel = contentEl.createEl("button", { text: "Cancel", cls: "brewin-scope-cancel" });
-    cancel.addEventListener("click", () => {
-      this.onChoose(null);
-      this.close();
-    });
+    cancel.addEventListener("click", () => this.close());
+    // The safe choice has the focus, so Enter never deletes by accident.
+    window.setTimeout(() => cancel.focus(), 0);
   }
 
   onClose(): void {
     this.contentEl.empty();
+    // Escape, a tap outside and Cancel all mean "no" — and the caller hears it either way.
+    if (!this.chosen) this.onChoose(null);
   }
 }

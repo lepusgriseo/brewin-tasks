@@ -3,6 +3,7 @@ import { minutesOfDay, nowMinutes, todayISO } from "./dates";
 import { eventsToItems } from "./calendarItem";
 import { todayAgenda } from "./views";
 import { birthdayDigestBits } from "./birthdays";
+import { dayClose } from "./planDay";
 import {
   digestSource,
   dueReminders,
@@ -16,6 +17,7 @@ import type BrewinTasksPlugin from "./main";
 
 const TICK_MS = 30_000;
 const SNOOZE_MINUTES = 10;
+const DAY_MINUTES = 24 * 60;
 /** When birthdays are announced if the morning digest is turned off: 09:00. */
 const BIRTHDAY_FALLBACK_MINUTES = 9 * 60;
 
@@ -46,9 +48,21 @@ export class ReminderService {
   start(): void {
     this.plugin.registerInterval(window.setInterval(() => this.tick(), TICK_MS));
     // An AudioContext starts suspended until a user gesture, so the first chime of a session
-    // would be silently swallowed. Unlock on the first interaction and keep it alive.
-    this.plugin.registerDomEvent(document, "pointerdown", () => this.unlockAudio(), { capture: true });
-    this.plugin.registerDomEvent(document, "keydown", () => this.unlockAudio(), { capture: true });
+    // would be silently swallowed. Unlock on an interaction and keep it alive — only while a chime
+    // could play: an audio context costs a phone something even when silent.
+    const unlock = () => {
+      const s = this.plugin.settings;
+      if (s.remindersEnabled && s.reminderSound && this.audio?.state !== "running") this.unlockAudio();
+    };
+    this.plugin.registerDomEvent(document, "pointerdown", unlock, { capture: true });
+    this.plugin.registerDomEvent(document, "keydown", unlock, { capture: true });
+  }
+
+  /** On unload: let the audio hardware go. (The interval and listeners are the plugin's to remove.) */
+  stop(): void {
+    const ctx = this.audio;
+    this.audio = null;
+    if (ctx && ctx.state !== "closed") void ctx.close().catch(() => undefined);
   }
 
   /** Called by the plugin's vault-change hook — cheaper than re-scanning every 30s. */
@@ -66,10 +80,11 @@ export class ReminderService {
     const now = nowMinutes();
 
     if (today !== this.lastDay) {
-      // New day: yesterday's fired-ids are dead weight, and the sources are all stale.
+      // New day: yesterday's fired-ids are dead weight, and the sources are all stale. A snooze
+      // that runs past midnight (snoozed at 23:55) is kept, on the new day's clock.
       this.lastDay = today;
       this.stale = true;
-      this.snoozed = [];
+      this.snoozed = this.snoozed.filter((sn) => sn.at >= DAY_MINUTES).map((sn) => ({ ...sn, at: sn.at - DAY_MINUTES }));
       this.lastTick = null;
       void this.persistFired(pruneFired(s.remindersFired, today));
     }
@@ -169,6 +184,23 @@ export class ReminderService {
         suppressed: false,
       });
     }
+    // Evening: Shut down, once a time is set for it.
+    const shutdownAt = minutesOfDay(s.shutdownTime);
+    if (shutdownAt != null) {
+      const close = dayClose(tasks, today, today);
+      out.push({
+        key: "shutdown",
+        title: "Shut down the day",
+        subtitle: [`${close.done.length} done`, close.open.length ? `${close.open.length} still open` : "", close.top.total ? `top ${close.top.done}/${close.top.total}` : ""]
+          .filter(Boolean)
+          .join(" · "),
+        path: "",
+        atMinutes: shutdownAt,
+        leadOverride: 0,
+        atStartOverride: true,
+        suppressed: false,
+      });
+    }
     if (digestAt != null) {
       const dueToday = agenda.anytime.length + agenda.timed.filter((r) => r.kind !== "event" && !r.done).length;
       const cross = this.plugin.settings.digestIncludeCrossPlugin;
@@ -212,11 +244,26 @@ export class ReminderService {
         void this.plugin.openPath(due.source.path);
       });
     }
+    // The morning digest leads into planning the day; the evening one into shutting it down.
+    if (due.source.key === "digest") {
+      actions.createEl("button", { text: "☀️ Plan my day", cls: "mod-cta" }).addEventListener("click", () => {
+        notice.hide();
+        this.plugin.planDay();
+      });
+    }
+    if (due.source.key === "shutdown") {
+      actions.createEl("button", { text: "🌙 Shut down", cls: "mod-cta" }).addEventListener("click", () => {
+        notice.hide();
+        this.plugin.shutDown();
+      });
+    }
     actions.createEl("button", { text: `Snooze ${SNOOZE_MINUTES}m` }).addEventListener("click", () => {
       notice.hide();
       this.snoozed.push({ at: nowMinutes() + SNOOZE_MINUTES, due });
     });
-    actions.createEl("button", { text: "✕" }).addEventListener("click", () => notice.hide());
+    const dismiss = actions.createEl("button", { text: "✕" });
+    dismiss.setAttr("aria-label", "Dismiss the reminder");
+    dismiss.addEventListener("click", () => notice.hide());
 
     if (s.reminderSound) this.playChime();
     if (s.reminderVibrate) {
@@ -250,8 +297,8 @@ export class ReminderService {
     }
   }
 
-  /** Two short notes, synthesised — no asset to bundle or path to get wrong. */
-  private playChime(): void {
+  /** Two short notes, synthesised — no asset to bundle or path to get wrong. Also Pomodoro's. */
+  playChime(): void {
     this.unlockAudio();
     const ctx = this.audio;
     if (!ctx || ctx.state !== "running") return; // never throw over a sound

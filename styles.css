@@ -33,7 +33,6 @@
   letter-spacing: 0.02em;
   text-transform: uppercase;
   color: var(--text-muted);
-  cursor: pointer;
   user-select: none;
 }
 .brewin-section-header.brewin-overdue { color: var(--text-error); }
@@ -103,8 +102,10 @@
   opacity: 0;
   transition: opacity 0.12s ease;
 }
-.brewin-task-row:hover .brewin-task-actions { opacity: 1; }
-@media (pointer: coarse) { .brewin-task-actions { opacity: 1; } }
+.brewin-task-row:hover .brewin-task-actions,
+.brewin-task-row:focus-within .brewin-task-actions { opacity: 1; }
+/* A touch screen — or a touch laptop, whose screen can't hover even when its trackpad can — always shows them. */
+@media (pointer: coarse), (hover: none), (any-pointer: coarse) { .brewin-task-actions { opacity: 1; } }
 .brewin-icon-btn {
   background: transparent;
   border: none;
@@ -297,7 +298,7 @@
   transition: opacity 0.1s ease;
 }
 .brewin-legend-toggle:hover { background: var(--background-modifier-hover); }
-.brewin-legend-toggle.off { opacity: 0.4; }
+.brewin-legend-toggle.off { opacity: 0.55; }
 .brewin-legend-glyph { font-size: 0.95em; }
 .brewin-legend-swatch { width: 11px; height: 11px; border-radius: 3px; display: inline-block; }
 .brewin-legend-sep { width: 1px; align-self: stretch; min-height: 16px; background: var(--background-modifier-border); margin: 0 3px; }
@@ -392,7 +393,7 @@
   border-left: 3px solid var(--text-accent);
 }
 .brewin-chip-item.kind-task { border-left-color: var(--interactive-accent); }
-.brewin-chip-item.done { opacity: 0.5; text-decoration: line-through; }
+.brewin-chip-item.done { opacity: 0.6; text-decoration: line-through; }
 .brewin-chip-item .g { opacity: 0.6; }
 .brewin-archived { opacity: 0.6; }
 
@@ -559,7 +560,7 @@
 }
 .brewin-bar.cont-left { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-width: 0 !important; }
 .brewin-bar.cont-right { border-top-right-radius: 0; border-bottom-right-radius: 0; }
-.brewin-bar.done { opacity: 0.5; text-decoration: line-through; }
+.brewin-bar.done { opacity: 0.6; text-decoration: line-through; }
 
 /* ── Calendar: week / day time grid ─────────────────────────────────────── */
 .brewin-timegrid { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-top: 6px; }
@@ -639,7 +640,7 @@
   cursor: pointer;
   box-sizing: border-box;
 }
-.brewin-tg-event.done { opacity: 0.5; text-decoration: line-through; }
+.brewin-tg-event.done { opacity: 0.6; text-decoration: line-through; }
 /* A block sharing its column gets a surface ring so the edges stay legible when packed tight. */
 .brewin-tg-event.shared { box-shadow: 0 0 0 1px var(--background-primary); }
 .brewin-tg-event.shared .time { display: none; }
@@ -1070,7 +1071,7 @@
 
 /* Transferred is a place-keeper, NOT completion — dimmed, but visually distinct from a
    done task, which is struck through in the task colour. */
-.brewin-review-row.is-transferred { opacity: 0.45; }
+.brewin-review-row.is-transferred { opacity: 0.6; }
 .brewin-review-row.is-transferred .brewin-review-title { text-decoration: line-through; }
 .brewin-review-row.is-done .brewin-review-title { font-style: italic; color: var(--text-muted); }
 
@@ -1458,9 +1459,15 @@ body.is-phone .brewin-dashboard .brewin-toolbar .brewin-search { max-width: none
   border-right: none;
   box-shadow: 4px 0 18px rgba(0, 0, 0, 0.25);
   transform: translateX(-104%);
-  transition: transform 0.22s ease-out;
+  /* Shut, it is also hidden — out of the tab order and unread — once it has slid away. */
+  visibility: hidden;
+  transition: transform 0.22s ease-out, visibility 0s linear 0.22s;
 }
-.brewin-dashboard.is-drawer.is-menu-open .brewin-menu { transform: none; }
+.brewin-dashboard.is-drawer.is-menu-open .brewin-menu {
+  transform: none;
+  visibility: visible;
+  transition: transform 0.22s ease-out, visibility 0s;
+}
 .brewin-menu-scrim {
   position: absolute;
   inset: 0;
@@ -1822,3 +1829,166 @@ body.is-phone .brewin-toolbar .brewin-board-pick { flex: 0 0 auto; max-width: 48
 .brewin-attr-found-none { color: var(--text-muted); }
 .brewin-attr-found-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 0 0 8px; }
 body.is-phone .brewin-attr-off { min-width: 36px; min-height: 36px; display: inline-flex; align-items: center; justify-content: center; }
+
+/* 1.63 — keyboard, screen readers and touch. Titles, chips, headings and calendar items that act on a
+   click are now reachable from the keyboard (src/a11y.ts); they show where the focus is. */
+:is(.brewin-dashboard, .brewin-calendar, .brewin-focus, .brewin-time) [role="button"]:not(.brewin-menu-item):focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+.brewin-section-title[role="button"] { cursor: pointer; }
+.brewin-focus-title [role="button"] { cursor: pointer; }
+.brewin-focus-btn[aria-disabled="true"] { opacity: 0.6; }
+/* A finger needs a bigger target than the icons' own size. */
+@media (pointer: coarse) {
+  .brewin-icon-btn { min-width: 32px; min-height: 32px; display: inline-flex; align-items: center; justify-content: center; }
+  .brewin-dp-header button { min-width: 40px; min-height: 40px; }
+}
+/* On a phone a long press is a drag, not a text selection or iOS's callout. */
+body.is-mobile .brewin-draggable { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+
+/* 1.64 — Undo, on the toast that says what was done. */
+.brewin-undo-toast { display: flex; align-items: center; gap: 12px; }
+.brewin-undo-label { flex: 1 1 auto; min-width: 0; }
+.brewin-undo-btn { flex: 0 0 auto; font-weight: 600; }
+body.is-mobile .brewin-undo-btn { min-height: 36px; padding: 0 14px; }
+
+/* 1.65 — time blocking and planning the day. */
+.brewin-tg-resize {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 10px;
+  cursor: ns-resize; touch-action: none;
+}
+.brewin-tg-resize::after {
+  content: ""; position: absolute; left: 50%; bottom: 3px; width: 18px; margin-left: -9px; height: 2px;
+  border-radius: 1px; background: currentColor; opacity: 0;
+}
+.brewin-tg-event:hover .brewin-tg-resize::after, .brewin-resizing .brewin-tg-resize::after { opacity: 0.45; }
+@media (pointer: coarse) {
+  .brewin-tg-resize { height: 18px; }
+  .brewin-tg-resize::after { opacity: 0.35; }
+}
+.brewin-tg-event.brewin-resizing { z-index: 6; box-shadow: 0 0 0 2px var(--interactive-accent); }
+.brewin-range-preview { pointer-events: none; }
+body.is-phone .brewin-timeblock-row > .brewin-plan-panel { order: -1; }
+.brewin-top .brewin-task-row { background: color-mix(in srgb, var(--color-yellow) 8%, transparent); }
+.brewin-meta-top { font-size: 0.9em; }
+
+.brewin-plan-modal .brewin-plan-head h3 { margin-bottom: 2px; }
+.brewin-plan-steps { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; font-size: var(--font-ui-smaller); }
+.brewin-plan-step { padding: 2px 8px; border-radius: 10px; color: var(--text-muted); background: var(--background-modifier-hover); }
+.brewin-plan-step.is-current { color: var(--text-on-accent); background: var(--interactive-accent); font-weight: 600; }
+.brewin-plan-step.is-done { color: var(--text-normal); }
+.brewin-plan-body { margin: 8px 0 12px; }
+.brewin-plan-lede { color: var(--text-muted); font-size: var(--font-ui-small); margin-bottom: 8px; }
+.brewin-plan-h { margin: 14px 0 4px; font-size: var(--font-ui-small); color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.02em; }
+.brewin-plan-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 4px; border-bottom: 1px solid var(--background-modifier-border); }
+.brewin-plan-row.is-answered, .brewin-plan-row.is-done { color: var(--text-muted); }
+.brewin-plan-row.is-top .brewin-plan-title { font-weight: 600; }
+.brewin-plan-main { flex: 1 1 12em; min-width: 0; }
+.brewin-plan-title { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.brewin-plan-meta { color: var(--text-muted); font-size: var(--font-ui-smaller); }
+.brewin-plan-time { color: var(--text-muted); font-variant-numeric: tabular-nums; min-width: 6.5em; }
+.brewin-plan-btns, .brewin-plan-est { display: flex; flex-wrap: wrap; gap: 4px; }
+/* A phone keeps a row's answers on one line — it scrolls sideways rather than doubling every row. */
+body.is-phone .brewin-plan-btns, body.is-phone .brewin-plan-est { flex-wrap: nowrap; overflow-x: auto; max-width: 100%; scrollbar-width: none; }
+body.is-phone .brewin-plan-btns::-webkit-scrollbar, body.is-phone .brewin-plan-est::-webkit-scrollbar { display: none; }
+body.is-phone .brewin-plan-btns button, body.is-phone .brewin-plan-est button { flex: 0 0 auto; padding: 0 10px; }
+.brewin-plan-est .is-on, .brewin-plan-pick.is-on { background: var(--interactive-accent); color: var(--text-on-accent); }
+.brewin-plan-answer { color: var(--text-success); font-size: var(--font-ui-smaller); }
+.brewin-plan-star { font-size: 1.1em; padding: 2px 8px; }
+.brewin-plan-sum { padding: 8px 10px; border-radius: 8px; background: var(--background-modifier-hover); margin-bottom: 10px; }
+.brewin-plan-sum.is-over { box-shadow: inset 3px 0 0 var(--text-warning); }
+.brewin-plan-sum.is-done { box-shadow: inset 3px 0 0 var(--text-success); }
+.brewin-plan-tools { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+@media (pointer: coarse) {
+  .brewin-plan-btns button, .brewin-plan-est button, .brewin-plan-pick, .brewin-plan-star { min-height: 36px; }
+}
+
+/* ── 1.66: tasks in other notes, checklists ──────────────────────────────── */
+.brewin-meta-note, .brewin-meta-check { color: var(--text-muted); white-space: nowrap; cursor: pointer; }
+.brewin-meta-note:hover, .brewin-meta-check:hover { color: var(--text-normal); }
+.brewin-meta-check.is-done { color: var(--color-green); }
+.brewin-checklist { margin: 10px 0 8px; }
+.brewin-checklist-item { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 2px 0; cursor: pointer; }
+.brewin-checklist-item input { margin: 0; flex: 0 0 auto; }
+.brewin-checklist-item.done span { color: var(--text-muted); text-decoration: line-through; }
+@media (pointer: coarse) {
+  .brewin-checklist-item { min-height: 40px; }
+}
+
+/* ── 1.67: goals ─────────────────────────────────────────────────────────── */
+.brewin-goal { border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 10px 12px; margin: 0 0 10px; }
+.brewin-goal.is-quiet { opacity: 0.75; }
+.brewin-goal-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.brewin-goal-name { font-weight: 600; }
+.brewin-goal-left { margin-left: auto; font-size: var(--font-ui-smaller); color: var(--text-muted); white-space: nowrap; }
+.brewin-goal-left.is-overdue { color: var(--text-error); }
+.brewin-goal-meta { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; }
+.brewin-goal-bar { height: 6px; border-radius: 3px; background: var(--background-modifier-border); margin: 8px 0 4px; overflow: hidden; }
+.brewin-goal-fill { height: 100%; background: var(--interactive-accent); border-radius: 3px; }
+.brewin-goal-empty { font-size: var(--font-ui-smaller); color: var(--text-faint); margin-top: 6px; }
+.brewin-goal-project { padding: 6px 0 4px; border-top: 1px solid var(--background-modifier-border-hover); margin-top: 6px; }
+.brewin-goal-unlinked .brewin-goal-project:first-child { border-top: none; }
+.brewin-goal-next { font-size: var(--font-ui-smaller); color: var(--text-muted); margin-top: 2px; }
+
+/* ── 1.68: other calendars ───────────────────────────────────────────────── */
+/* Read-only: a dashed edge says it belongs to another calendar. */
+.brewin-chip-item.kind-external, .brewin-tg-event.kind-external { border-left-style: dashed; }
+.brewin-external-cal { display: flex; align-items: center; gap: 8px; margin: 10px 0 6px; color: var(--text-muted); font-size: var(--font-ui-small); }
+.brewin-external-dot { width: 10px; height: 10px; border-radius: 50%; flex: 0 0 auto; }
+.brewin-external-where { margin: 6px 0; }
+.brewin-external-warn { margin: 6px 0; color: var(--text-warning); font-size: var(--font-ui-small); }
+.brewin-external-desc { white-space: pre-wrap; max-height: 40vh; overflow-y: auto; margin: 8px 0; padding: 8px 10px; border-radius: 6px; background: var(--background-secondary); font-size: var(--font-ui-small); user-select: text; }
+.brewin-ics-detail { border-top: none; padding-top: 0; }
+.brewin-ics-url { width: 100%; min-width: 220px; }
+
+/* ── 1.68: the project timeline ──────────────────────────────────────────── */
+.brewin-tl { overflow-x: auto; padding-bottom: 6px; }
+.brewin-tl-grid { min-width: max-content; }
+.brewin-tl-row { display: flex; align-items: stretch; border-bottom: 1px solid var(--background-modifier-border-hover); }
+.brewin-tl-head { position: sticky; top: 0; z-index: 3; background: var(--background-primary); }
+.brewin-tl-name {
+  position: sticky; left: 0; z-index: 2; flex: 0 0 180px; width: 180px; box-sizing: border-box;
+  padding: 8px 10px 8px 0; background: var(--background-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.brewin-tl-head .brewin-tl-name { font-size: var(--font-ui-smaller); color: var(--text-muted); white-space: normal; line-height: 1.25; padding-top: 4px; padding-bottom: 4px; }
+.brewin-tl-track { position: relative; flex: 0 0 auto; width: var(--tl-width); min-height: 36px; }
+.brewin-tl-head .brewin-tl-track { min-height: 26px; }
+.brewin-tl-month { position: absolute; top: 0; bottom: 0; padding: 5px 0 0 4px; border-left: 1px solid var(--background-modifier-border); font-size: var(--font-ui-smaller); color: var(--text-muted); white-space: nowrap; }
+.brewin-tl-today { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--color-red); opacity: 0.55; }
+.brewin-tl-bar { position: absolute; top: 10px; height: 16px; border-radius: 8px; background: color-mix(in srgb, var(--interactive-accent) 35%, transparent); }
+.brewin-tl-bar.is-waiting { background: color-mix(in srgb, var(--text-muted) 30%, transparent); }
+.brewin-tl-bar.is-overdue { box-shadow: inset -4px 0 0 var(--text-error); }
+/* No start or no deadline: that end fades rather than claiming a date. */
+.brewin-tl-bar.open-start { -webkit-mask-image: linear-gradient(to right, transparent, #000 24px); mask-image: linear-gradient(to right, transparent, #000 24px); }
+.brewin-tl-bar.open-end { -webkit-mask-image: linear-gradient(to left, transparent, #000 24px); mask-image: linear-gradient(to left, transparent, #000 24px); }
+.brewin-tl-mark { position: absolute; top: 12px; width: 12px; height: 12px; margin-left: -6px; border-radius: 50%; background: var(--interactive-accent); border: 2px solid var(--background-primary); box-sizing: border-box; cursor: pointer; }
+.brewin-tl-mark.is-task { border-radius: 3px; }
+.brewin-tl-mark.is-span { top: 16px; height: 5px; margin-left: 0; border: none; border-radius: 3px; }
+.brewin-tl-mark.is-overdue { background: var(--text-error); }
+.brewin-tl-mark:focus-visible { outline: 2px solid var(--interactive-accent); outline-offset: 2px; }
+body.is-phone .brewin-tl-name { flex-basis: 120px; width: 120px; }
+@media (pointer: coarse) {
+  .brewin-tl-mark:not(.is-span) { width: 18px; height: 18px; margin-left: -9px; top: 9px; }
+}
+
+/* ── 1.69: search operators ──────────────────────────────────────────────── */
+.brewin-search-note { font-size: var(--font-ui-smaller); color: var(--text-warning); margin: 4px 0 8px; }
+.brewin-search-help { border: 1px solid var(--background-modifier-border); border-radius: 10px; padding: 10px 14px; margin: 4px 0 12px; }
+.brewin-search-help h4 { margin: 0 0 8px; }
+.brewin-search-help dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; }
+.brewin-search-help dt code { white-space: pre-wrap; font-size: var(--font-ui-smaller); }
+.brewin-search-help dd { margin: 0; color: var(--text-muted); font-size: var(--font-ui-smaller); }
+body.is-phone .brewin-search-help dl { grid-template-columns: 1fr; gap: 2px; }
+body.is-phone .brewin-search-help dd { margin-bottom: 8px; }
+
+/* ── 1.69: keys ──────────────────────────────────────────────────────────── */
+.brewin-keys { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 6px 0 12px; }
+.brewin-keys dd { margin: 0; color: var(--text-muted); }
+.brewin-keys kbd { font-size: var(--font-ui-smaller); white-space: nowrap; }
+
+/* ── 1.69: insights, Pomodoro ────────────────────────────────────────────── */
+.brewin-time-tabs { margin: 8px 0 4px; flex-wrap: wrap; }
+.brewin-focus-phase { text-align: center; color: var(--text-muted); font-size: var(--font-ui-small); margin: -4px 0 8px; }

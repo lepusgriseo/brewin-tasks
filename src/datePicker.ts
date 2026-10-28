@@ -9,6 +9,7 @@ import {
 } from "./dates";
 import { parseNaturalDate } from "./dateParser";
 import { dayMarks } from "./calendar";
+import { isSubmitKey, restoreFocus, saveFocus } from "./a11y";
 
 const WEEK_HEADERS_MON = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
 const WEEK_HEADERS_SUN = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
@@ -36,6 +37,8 @@ export class DatePickerModal extends Modal {
   private picked = false;
   private selectedISO: string | null;
   private opts: DatePickerOptions;
+  /** The day the keyboard should land on after the next draw (an arrow key crossed into another month). */
+  private focusISO: string | null = null;
 
   constructor(
     app: App,
@@ -55,6 +58,8 @@ export class DatePickerModal extends Modal {
 
   onOpen(): void {
     this.modalEl.addClass("brewin-datepicker-modal");
+    // Start on the chosen day (or today), so the arrow keys work at once.
+    this.focusISO = this.selectedISO ?? formatISO(todayUTC());
     this.render();
   }
 
@@ -66,6 +71,8 @@ export class DatePickerModal extends Modal {
 
   private render(): void {
     const { contentEl } = this;
+    // ‹ and › redraw the month; the keyboard stays on the arrow it pressed.
+    const focus = saveFocus(contentEl);
     contentEl.empty();
 
     // Quick row
@@ -83,25 +90,37 @@ export class DatePickerModal extends Modal {
     // NL input
     const nl = contentEl.createDiv({ cls: "brewin-dp-nl" });
     const input = nl.createEl("input", { type: "text", placeholder: "e.g. next fri, +3d, 2026-08-01" });
+    input.setAttr("aria-label", "Type a date");
+    input.addEventListener("input", () => {
+      input.removeClass("brewin-dp-invalid");
+      input.removeAttribute("aria-invalid");
+    });
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
+      if (isSubmitKey(e)) {
         const iso = parseNaturalDate(input.value);
         if (iso) this.choose(iso);
-        else input.addClass("brewin-dp-invalid");
+        else {
+          input.addClass("brewin-dp-invalid");
+          input.setAttr("aria-invalid", "true");
+        }
       }
     });
 
     // Month header
     const header = contentEl.createDiv({ cls: "brewin-dp-header" });
-    header.createEl("button", { text: "‹" }).addEventListener("click", () => {
+    // Each arrow is described by the month heading, so landing back on it after a press says the month.
+    const titleId = `brewin-dp-title-${Math.random().toString(36).slice(2, 8)}`;
+    const nav = { "aria-describedby": titleId };
+    header.createEl("button", { text: "‹", attr: { "aria-label": "Previous month", "data-focus": "dp:prev", ...nav } }).addEventListener("click", () => {
       this.view = addMonths(this.view, -1);
       this.render();
     });
     header.createEl("span", {
       cls: "brewin-dp-title",
       text: this.view.toLocaleString("default", { month: "long", timeZone: "UTC" }) + " " + this.view.getUTCFullYear(),
+      attr: { id: titleId },
     });
-    header.createEl("button", { text: "›" }).addEventListener("click", () => {
+    header.createEl("button", { text: "›", attr: { "aria-label": "Next month", "data-focus": "dp:next", ...nav } }).addEventListener("click", () => {
       this.view = addMonths(this.view, 1);
       this.render();
     });
@@ -109,7 +128,9 @@ export class DatePickerModal extends Modal {
     // Grid
     const grid = contentEl.createDiv({ cls: "brewin-dp-grid" });
     const headers = this.firstDay === 0 ? WEEK_HEADERS_SUN : WEEK_HEADERS_MON;
-    headers.forEach((h) => grid.createDiv({ cls: "brewin-dp-dow", text: h }));
+    // The day buttons say their whole date; these two-letter headings are for the eye.
+    headers.forEach((h) => grid.createDiv({ cls: "brewin-dp-dow", text: h, attr: { "aria-hidden": "true" } }));
+    grid.addEventListener("keydown", (e) => this.arrowKey(e));
 
     const year = this.view.getUTCFullYear();
     const month = this.view.getUTCMonth();
@@ -128,7 +149,7 @@ export class DatePickerModal extends Modal {
     for (let day = 1; day <= dim; day++) {
       const cellDate = new Date(Date.UTC(year, month, day));
       const iso = formatISO(cellDate);
-      const cell = grid.createEl("button", { cls: "brewin-dp-day", text: String(day) });
+      const cell = grid.createEl("button", { cls: "brewin-dp-day", text: String(day), attr: { "data-focus": `dp:${iso}`, "data-iso": iso } });
 
       const m = dayMarks(iso, selected, related, todayISO);
       if (m.inSpan) cell.addClass("brewin-dp-inspan");
@@ -140,7 +161,9 @@ export class DatePickerModal extends Modal {
       if (m.selected) marks.push(`current ${this.opts.selectedLabel?.toLowerCase() ?? "selection"}`);
       if (m.related) marks.push(this.opts.relatedLabel?.toLowerCase() ?? "paired date");
       if (m.today) marks.push("today");
-      cell.setAttr("aria-label", marks.length ? `${iso} — ${marks.join(", ")}` : iso);
+      const spoken = cellDate.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+      cell.setAttr("aria-label", marks.length ? `${spoken} — ${marks.join(", ")}` : spoken);
+      if (m.today) cell.setAttr("aria-current", "date");
 
       cell.addEventListener("click", () => this.choose(iso));
     }
@@ -160,6 +183,43 @@ export class DatePickerModal extends Modal {
     const kt = key.createSpan({ cls: "brewin-dp-key-item" });
     kt.createSpan({ cls: "brewin-dp-key-swatch is-today" });
     kt.createSpan({ text: "Today" });
+
+    const land = this.focusISO;
+    this.focusISO = null;
+    const target = land ? contentEl.querySelector<HTMLElement>(`[data-iso="${land}"]`) : null;
+    if (target) target.focus({ preventScroll: true });
+    else restoreFocus(contentEl, focus);
+  }
+
+  /** Arrow keys move a day or a week, Page Up and Down a month, Home and End to the week's ends. */
+  private arrowKey(e: KeyboardEvent): void {
+    const from = (e.target as HTMLElement | null)?.getAttribute?.("data-iso");
+    const fromDate = from ? parseISO(from) : null;
+    if (!fromDate) return;
+    const dow = (fromDate.getUTCDay() - this.firstDay + 7) % 7; // 0 = the week's first day
+    const step: Record<string, () => Date> = {
+      ArrowLeft: () => addDays(fromDate, -1),
+      ArrowRight: () => addDays(fromDate, 1),
+      ArrowUp: () => addDays(fromDate, -7),
+      ArrowDown: () => addDays(fromDate, 7),
+      PageUp: () => addMonths(fromDate, -1),
+      PageDown: () => addMonths(fromDate, 1),
+      Home: () => addDays(fromDate, -dow),
+      End: () => addDays(fromDate, 6 - dow),
+    };
+    const go = step[e.key];
+    if (!go) return;
+    e.preventDefault();
+    const to = go();
+    const iso = formatISO(to);
+    const here = this.contentEl.querySelector<HTMLElement>(`[data-iso="${iso}"]`);
+    if (here) {
+      here.focus();
+      return;
+    }
+    this.view = new Date(Date.UTC(to.getUTCFullYear(), to.getUTCMonth(), 1));
+    this.focusISO = iso;
+    this.render();
   }
 
   onClose(): void {

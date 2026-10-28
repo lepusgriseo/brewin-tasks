@@ -20,6 +20,10 @@
 // Without a non-passive touchmove listener the browser wins the gesture, scrolls whatever
 // container the drag started in, and fires pointercancel — so an armed drag dies the moment
 // the finger moves. That looked exactly like "the item only moves inside the ALL DAY band".
+//
+// Listeners go on the element's own document, not the global one: on desktop a pane can live in a
+// pop-out window, whose pointer events never reach the main window's document. And while a drag is
+// armed, Android's long-press context menu is kept from opening over it.
 
 export interface LongPressDragOptions {
   /** Milliseconds to hold before dragging becomes possible. */
@@ -52,6 +56,7 @@ export function attachLongPressDrag(el: HTMLElement, opts: LongPressDragOptions)
   const onPointerDown = (e: PointerEvent) => {
     // Ignore secondary mouse buttons; touch and pen report button 0.
     if (e.button !== 0 && e.pointerType === "mouse") return;
+    const doc = el.ownerDocument ?? document;
 
     const startX = e.clientX;
     const startY = e.clientY;
@@ -61,6 +66,11 @@ export function attachLongPressDrag(el: HTMLElement, opts: LongPressDragOptions)
     // Restored on finish — leaving it set would stop the element scrolling ever again.
     const priorTouchAction = el.style.touchAction;
     const blockScroll = (scrollEv: Event) => scrollEv.preventDefault();
+    // A long press is also Android's gesture for the context menu; mid-drag it is never wanted.
+    const blockMenu = (menuEv: Event) => {
+      menuEv.preventDefault();
+      menuEv.stopPropagation();
+    };
 
     const clearTimer = () => {
       if (timer !== null) {
@@ -71,10 +81,12 @@ export function attachLongPressDrag(el: HTMLElement, opts: LongPressDragOptions)
 
     const finish = (cancelled: boolean, ev?: PointerEvent) => {
       clearTimer();
-      document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerup", onUp);
-      document.removeEventListener("pointercancel", onPointerCancel);
-      document.removeEventListener("touchmove", blockScroll);
+      doc.removeEventListener("pointermove", onMove);
+      doc.removeEventListener("pointerup", onUp);
+      doc.removeEventListener("pointercancel", onPointerCancel);
+      doc.removeEventListener("touchmove", blockScroll);
+      // Left a moment longer: Android sends the menu's event just after the finger lifts.
+      if (armed) window.setTimeout(() => doc.removeEventListener("contextmenu", blockMenu, true), 400);
       el.style.touchAction = priorTouchAction;
       if (!armed) return;
       // Armed but never actually moved: the user held and let go. Treat that as a cancel
@@ -90,9 +102,9 @@ export function attachLongPressDrag(el: HTMLElement, opts: LongPressDragOptions)
         // just sloppy, so give the gesture back rather than hijacking it.
         if (Math.hypot(ev.clientX - startX, ev.clientY - startY) > slop) {
           clearTimer();
-          document.removeEventListener("pointermove", onMove);
-          document.removeEventListener("pointerup", onUp);
-          document.removeEventListener("pointercancel", onPointerCancel);
+          doc.removeEventListener("pointermove", onMove);
+          doc.removeEventListener("pointerup", onUp);
+          doc.removeEventListener("pointercancel", onPointerCancel);
         }
         return;
       }
@@ -115,14 +127,15 @@ export function attachLongPressDrag(el: HTMLElement, opts: LongPressDragOptions)
         /* capture is best-effort — document listeners cover us either way */
       }
       // THE fix for mobile: stop the browser scrolling now that this gesture is a drag.
-      document.addEventListener("touchmove", blockScroll, { passive: false });
+      doc.addEventListener("touchmove", blockScroll, { passive: false });
+      doc.addEventListener("contextmenu", blockMenu, true);
       el.style.touchAction = "none";
       opts.onArm();
     }, holdMs);
 
-    document.addEventListener("pointermove", onMove, { passive: false });
-    document.addEventListener("pointerup", onUp);
-    document.addEventListener("pointercancel", onPointerCancel);
+    doc.addEventListener("pointermove", onMove, { passive: false });
+    doc.addEventListener("pointerup", onUp);
+    doc.addEventListener("pointercancel", onPointerCancel);
   };
 
   el.addEventListener("pointerdown", onPointerDown);
@@ -154,6 +167,7 @@ export function attachLongPressTap(el: HTMLElement, opts: LongPressTapOptions): 
 
   const onPointerDown = (e: PointerEvent) => {
     if (e.button !== 0 && e.pointerType === "mouse") return;
+    const doc = el.ownerDocument ?? document;
 
     const startX = e.clientX;
     const startY = e.clientY;
@@ -165,9 +179,9 @@ export function attachLongPressTap(el: HTMLElement, opts: LongPressTapOptions): 
         window.clearTimeout(timer);
         timer = null;
       }
-      document.removeEventListener("pointermove", onMove);
-      document.removeEventListener("pointerup", onUp);
-      document.removeEventListener("pointercancel", onUp);
+      doc.removeEventListener("pointermove", onMove);
+      doc.removeEventListener("pointerup", onUp);
+      doc.removeEventListener("pointercancel", onUp);
     };
 
     const onMove = (ev: PointerEvent) => {
@@ -181,9 +195,9 @@ export function attachLongPressTap(el: HTMLElement, opts: LongPressTapOptions): 
       opts.onLongPress(startX, startY, target);
     }, holdMs);
 
-    document.addEventListener("pointermove", onMove, { passive: true });
-    document.addEventListener("pointerup", onUp);
-    document.addEventListener("pointercancel", onUp);
+    doc.addEventListener("pointermove", onMove, { passive: true });
+    doc.addEventListener("pointerup", onUp);
+    doc.addEventListener("pointercancel", onUp);
   };
 
   el.addEventListener("pointerdown", onPointerDown);

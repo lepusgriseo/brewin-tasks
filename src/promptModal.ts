@@ -1,4 +1,5 @@
 import { App, Modal } from "obsidian";
+import { isSubmitKey } from "./a11y";
 
 /** A one-line text prompt. Enter accepts, Escape cancels — the whole dialog is the input. */
 export class PromptModal extends Modal {
@@ -28,10 +29,11 @@ export class PromptModal extends Modal {
 
     const input = contentEl.createEl("input", { type: "text", cls: "brewin-capture-title" });
     input.placeholder = this.opts.placeholder ?? "";
+    input.setAttr("aria-label", this.opts.title);
     input.value = this.value;
     input.addEventListener("input", () => (this.value = input.value));
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") {
+      if (isSubmitKey(e)) {
         e.preventDefault();
         this.submit();
       }

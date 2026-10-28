@@ -14,6 +14,16 @@ export function isActive(t: Pick<Task, "status">): boolean {
   return t.status === "todo";
 }
 
+/** Why a task couldn't be ticked, from what the store said: "2 subtasks still open and waiting on 1 other task". */
+export function completionRefusal(res: { open: number; blocked: number }): string {
+  return [
+    res.open ? `${res.open} subtask${res.open === 1 ? "" : "s"} still open` : "",
+    res.blocked ? `waiting on ${res.blocked} other task${res.blocked === 1 ? "" : "s"}` : "",
+  ]
+    .filter(Boolean)
+    .join(" and ") || "something it depends on isn't done";
+}
+
 /**
  * Planned for a day that has passed and still not done.
  *

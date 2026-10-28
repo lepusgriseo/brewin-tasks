@@ -73,6 +73,7 @@ export function viewCounts(tasks: Task[], today: string): Record<DashView, numbe
     week: weekAgenda(tasks, today, 7).reduce((n, d) => n + d.tasks.length, 0),
     inbox: inboxTasks(tasks).length,
     projects: null,
+    goals: null,
     attention: att.overdue.length + att.slipped.length,
     review: null,
     all: tasks.filter(isOpen).length,

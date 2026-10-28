@@ -86,3 +86,19 @@ test("rangeBrief: focus-timer time per task, and focus sessions kept out of the 
   // Without a focus category nothing is hidden.
   assert.equal(rangeBrief({ from: MON, to: SUN, today: TODAY, tasks: [], items: [item({ category: "Focus", date: MON })] }).events.length, 1);
 });
+
+test("rangeBrief counts the week's top three: starred on a day in it, and how many were done", () => {
+  const b = rangeBrief({
+    from: MON,
+    to: SUN,
+    today: TODAY,
+    items: [],
+    tasks: [
+      task({ title: "A", top: "2026-10-20", status: "done", completed: "2026-10-20" }),
+      task({ title: "B", top: "2026-10-20" }),
+      task({ title: "C", top: "2026-10-23", status: "done", completed: "2026-10-24" }),
+      task({ title: "D", top: "2026-10-12", status: "done" }), // a week before: not counted
+    ],
+  });
+  assert.deepEqual(b.top, { starred: 3, done: 2 });
+});

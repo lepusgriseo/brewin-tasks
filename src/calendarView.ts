@@ -1,8 +1,12 @@
-import { ItemView, Menu, Notice, Platform, setIcon, TFile, WorkspaceLeaf } from "obsidian";
-import { addDays, addMinutesHM, dayDelta, durationMinutes, formatHM, formatISO, isoWeekOf, monthMatrix, monthOf, nowMinutes, parseISO, shiftISO, shortDate, todayISO, weekDates, weekdayHeaders } from "./dates";
+import { ItemView, Menu, Notice, Platform, Scope, setIcon, TFile, WorkspaceLeaf } from "obsidian";
+import { addDays, addMinutesHM, dayDelta, durationMinutes, formatHM, formatISO, isoWeekOf, minutesOfDay, monthMatrix, monthOf, nowMinutes, parseISO, shiftISO, shortDate, todayISO, weekDates, weekdayHeaders } from "./dates";
 import { blockRange, CalView, stepAnchor, timeBox, viewTitle, visibleRange } from "./calendar";
 import { slotProgress } from "./slots";
+import { completionRefusal } from "./status";
+import { dayPlan, TOP_LIMIT } from "./planDay";
+import { ProjectTaskSource } from "./projectTasks";
 import { attachLongPressDrag, attachLongPressTap, hapticTick } from "./dragHandle";
+import { isSubmitKey, pressable, restoreFocus, saveFocus } from "./a11y";
 import { groupItemsByDay } from "./calendarItem";
 import { allDaySpans, BarSegment, laneCount, packOverlaps, segmentsForWeek, taskSpans } from "./calendarLayout";
 import { EventModal } from "./eventModal";
@@ -14,13 +18,35 @@ import { categoryColor, HOUR_PX_BY_SLOT } from "./settings";
 import { renderTimeBars } from "./timeBars";
 import { formatDuration, grandTotalMinutes, timeBudget, totalsByCategory } from "./timeTracking";
 import { monthPanelSections, MonthPanelSection } from "./views";
-import type { NewTaskFields } from "./taskStore";
+import { fieldsOf, type NewTaskFields } from "./taskStore";
+import { currentOccurrenceISO } from "./recurrence";
+import { CAL_BINDINGS, calKey, isTyping } from "./keys";
+import { KeysModal } from "./keysModal";
 import { CalendarItem, EventItem, Task } from "./types";
 import type BrewinTasksPlugin from "./main";
 
 export const CALENDAR_VIEW_TYPE = "brewin-calendar";
 
 const BAR_H = 20; // px per all-day bar lane
+
+/** What a calendar item is, in words, for its accessible name. */
+const KIND_WORD: Record<CalendarItem["kind"], string> = {
+  task: "Task",
+  event: "Event",
+  project: "Project step",
+  training: "Training",
+  birthday: "Birthday",
+  note: "Task in a note",
+  external: "From another calendar",
+};
+
+/** "Event: 09:00–10:00 Dentist" — what a chip, block or bar is, as a screen reader says it. */
+function itemLabel(it: { kind: CalendarItem["kind"]; title: string; start?: string | null; end?: string | null }): string {
+  const when = it.start ? `${it.start}${it.end ? `–${it.end}` : ""} ` : "";
+  return `${KIND_WORD[it.kind] ?? "Item"}: ${when}${it.title}`;
+}
+/** How long after a drop its trailing click is ignored. */
+const CLICK_AFTER_DROP_MS = 400;
 
 /** True for items that render as per-day chips (everything except all-day events, which are bars). */
 function isChipItem(it: CalendarItem): boolean {
@@ -29,16 +55,29 @@ function isChipItem(it: CalendarItem): boolean {
 
 /** One section of a task side-panel: a `monthPanelSections` view-model row (or a synthetic
  *  single section for the Week panel) plus the section's add-box wiring. */
-type TaskPanelSection = MonthPanelSection & {
+/**
+ * What dropping a calendar item on a panel section does: file it under a week or a month bucket,
+ * send it back to the inbox (no date), or nothing (the section is a list to drag from, not onto).
+ */
+type PanelDrop = "week" | "month" | "inbox" | "none";
+
+type TaskPanelSection = Omit<MonthPanelSection, "kind"> & {
+  kind: PanelDrop;
   addPlaceholder: string;
   emptyText: string;
-  onAdd: (title: string) => Promise<void>;
+  /** Where a title typed into the section's box goes; no box without it. */
+  onAdd?: (title: string) => Promise<void>;
 };
 
 export class CalendarView extends ItemView {
   private view: CalView;
   private anchor: string = todayISO();
-  private suppressClick = false;
+  /**
+   * Until when a click is the tail of a drop rather than a tap (epoch ms). A time, not a flag: a mouse
+   * drop is followed by a click, but a finger that moved sends none — and a flag left set then ate
+   * the next real tap.
+   */
+  private suppressClickUntil = 0;
   private snapEl: HTMLElement | null = null;
   private renderToken = 0;
   /** Current-time indicators rendered this pass, nudged every minute. */
@@ -51,6 +90,13 @@ export class CalendarView extends ItemView {
   private sectionOpen = new Map<string, boolean>();
   /** Phones only: whether the kinds/categories legend is showing. */
   private legendOpen = false;
+  /**
+   * What the last render showed (view, day, zoom), and where its hour grid was scrolled to when the
+   * next one began. A redraw follows every edit and every sync; for the same view it keeps the place
+   * rather than jumping back to the current time.
+   */
+  private shownKey: string | null = null;
+  private keepGridScroll: number | null = null;
 
   constructor(leaf: WorkspaceLeaf, private plugin: BrewinTasksPlugin) {
     super(leaf);
@@ -93,7 +139,40 @@ export class CalendarView extends ItemView {
   }
 
   async onOpen(): Promise<void> {
+    // Its own keys (keys.ts) while it is the active pane — see the dashboard's for why exact modifiers.
+    this.scope = new Scope(this.app.scope);
+    for (const [mods, key] of CAL_BINDINGS) this.scope.register(mods, key, (e) => (this.onKey(e) ? false : undefined));
     await this.render();
+  }
+
+  /** A key pressed while the calendar is the active pane. True when it was one of its own. */
+  onKey(e: KeyboardEvent): boolean {
+    if (isTyping(e.target) || isTyping(this.contentEl.doc.activeElement)) return false;
+    const a = calKey(e);
+    if (!a) return false;
+    switch (a.kind) {
+      case "today":
+        this.anchor = todayISO();
+        void this.render();
+        return true;
+      case "step":
+        this.step(a.by);
+        return true;
+      case "view":
+        // A phone shows three days where a desktop shows the week.
+        this.view = a.view === "week" && Platform.isPhone ? "3day" : a.view;
+        void this.render();
+        return true;
+      case "new":
+        this.newEvent(this.anchor);
+        return true;
+      case "undo":
+        void this.plugin.undo();
+        return true;
+      case "help":
+        new KeysModal(this.app, "calendar").open();
+        return true;
+    }
   }
 
   async onClose(): Promise<void> {
@@ -129,6 +208,13 @@ export class CalendarView extends ItemView {
     const spans = [...eventDaySpans, ...taskDaySpans];
 
     const root = this.contentEl;
+    const key = `${this.view}|${this.anchor}|${this.slotMinutes}`;
+    const same = key === this.shownKey;
+    this.keepGridScroll = same ? root.querySelector<HTMLElement>(".brewin-tg-body")?.scrollTop ?? null : null;
+    const pageScroll = same ? root.scrollTop : 0;
+    this.shownKey = key;
+    // Every button here redraws the calendar; put the keyboard back where it was.
+    const focus = saveFocus(root);
     root.empty();
     this.nowLines = []; // the previous pass's nodes are gone with root.empty()
     // The month grid's resize observer watched a node that root.empty() just detached;
@@ -146,9 +232,19 @@ export class CalendarView extends ItemView {
       const row = root.createDiv({ cls: "brewin-month-row" });
       this.renderMonth(row, byDay, spans);
       if (settings.showMonthTasks) this.renderMonthTasksPanel(row);
-    } else if (this.view === "week") {
-      const days = weekDates(parseISO(this.anchor)!, settings.firstDayOfWeek).map(formatISO);
-      if (settings.showWeekTasks) {
+    } else {
+      const days =
+        this.view === "week"
+          ? weekDates(parseISO(this.anchor)!, settings.firstDayOfWeek).map(formatISO)
+          : this.view === "3day"
+            ? [0, 1, 2].map((n) => formatISO(addDays(parseISO(this.anchor)!, n)))
+            : [this.anchor];
+      if (settings.showPlanPanel) {
+        // Time blocking: the "To plan" panel beside the hour grid — drag its rows onto the clock.
+        const row = root.createDiv({ cls: "brewin-week-row brewin-timeblock-row" });
+        this.renderTimeGrid(row, byDay, spans, days);
+        this.renderPlanPanel(row, days);
+      } else if (this.view === "week" && settings.showWeekTasks) {
         // Same arrangement as Month: the time grid keeps its own sizing, the "this week"
         // panel takes a fixed-width column beside it.
         const row = root.createDiv({ cls: "brewin-week-row" });
@@ -157,20 +253,19 @@ export class CalendarView extends ItemView {
       } else {
         this.renderTimeGrid(root, byDay, spans, days);
       }
-    } else if (this.view === "3day") {
-      const a = parseISO(this.anchor)!;
-      this.renderTimeGrid(root, byDay, spans, [0, 1, 2].map((n) => formatISO(addDays(a, n))));
-    } else {
-      this.renderTimeGrid(root, byDay, spans, [this.anchor]);
     }
+    // On a phone the page itself scrolls (the grid, then the panels under it): keep that place too.
+    if (pageScroll) root.scrollTop = pageScroll;
+    restoreFocus(root, focus, root.querySelector<HTMLElement>("[data-focus='cal:today']"));
   }
 
   private toolbar(root: HTMLElement): void {
     const bar = root.createDiv({ cls: "brewin-toolbar brewin-cal-toolbar" });
     const nav = bar.createDiv({ cls: "brewin-cal-nav" });
-    nav.createEl("button", { text: "‹" }).addEventListener("click", () => this.step(-1));
-    nav.createEl("button", { text: "Today" }).addEventListener("click", () => { this.anchor = todayISO(); this.render(); });
-    nav.createEl("button", { text: "›" }).addEventListener("click", () => this.step(1));
+    const unit = this.view === "month" ? "month" : this.view === "week" ? "week" : this.view === "3day" ? "three days" : "day";
+    nav.createEl("button", { text: "‹", attr: { "aria-label": `Previous ${unit}`, "data-focus": "cal:prev" } }).addEventListener("click", () => this.step(-1));
+    nav.createEl("button", { text: "Today", attr: { "data-focus": "cal:today" } }).addEventListener("click", () => { this.anchor = todayISO(); this.render(); });
+    nav.createEl("button", { text: "›", attr: { "aria-label": `Next ${unit}`, "data-focus": "cal:next" } }).addEventListener("click", () => this.step(1));
     bar.createSpan({ cls: "brewin-cal-title", text: viewTitle(this.view, this.anchor, this.plugin.settings.firstDayOfWeek) });
 
     const right = bar.createDiv({ cls: "brewin-cal-right" });
@@ -179,7 +274,8 @@ export class CalendarView extends ItemView {
       ? [["month", "Month"], ["3day", "3 days"], ["day", "Day"]]
       : [["month", "Month"], ["week", "Week"], ["day", "Day"]];
     views.forEach(([v, label]) => {
-      const b = seg.createEl("button", { text: label, cls: this.view === v ? "active" : "" });
+      const b = seg.createEl("button", { text: label, cls: this.view === v ? "active" : "", attr: { "data-focus": `cal:view:${v}` } });
+      b.setAttr("aria-pressed", String(this.view === v));
       b.addEventListener("click", () => { this.view = v; this.render(); });
     });
     // Grid resolution — only meaningful where there's an hour grid to zoom.
@@ -200,9 +296,10 @@ export class CalendarView extends ItemView {
     // On a phone the colour legend took three rows before the calendar began; it folds behind a
     // button there, and stays open on a desktop where there is room for it.
     if (Platform.isPhone) {
-      const filter = right.createEl("button", { cls: "clickable-icon brewin-cal-filter" + (this.legendOpen ? " is-active" : "") });
+      const filter = right.createEl("button", { cls: "clickable-icon brewin-cal-filter" + (this.legendOpen ? " is-active" : ""), attr: { "data-focus": "cal:filter" } });
       setIcon(filter, "filter");
       filter.setAttr("aria-label", "Show or hide kinds and categories");
+      filter.setAttr("aria-expanded", String(this.legendOpen));
       filter.addEventListener("click", () => {
         this.legendOpen = !this.legendOpen;
         this.render();
@@ -215,6 +312,13 @@ export class CalendarView extends ItemView {
     const add = right.createEl("button", { text: Platform.isPhone ? "＋" : "＋ Event", cls: "mod-cta brewin-cal-add" });
     add.setAttr("aria-label", "New event");
     add.addEventListener("click", () => this.newEvent(this.anchor));
+  }
+
+  /** Show one day — Plan my day's "place them on the calendar". */
+  showDay(iso: string): void {
+    this.view = "day";
+    this.anchor = iso;
+    void this.render();
   }
 
   private step(dir: number): void {
@@ -238,8 +342,9 @@ export class CalendarView extends ItemView {
 
     const wrap = root.createDiv({ cls: "brewin-time-panel" });
     const head = wrap.createDiv({ cls: "brewin-time-panel-head" });
-    head.createSpan({ cls: "brewin-expander", text: s.timePanelOpen ? "▾" : "▸" });
-    head.createSpan({ text: "⏱ Time by category" });
+    head.createSpan({ cls: "brewin-expander", text: s.timePanelOpen ? "▾" : "▸", attr: { "aria-hidden": "true" } });
+    // The name is the keyboard's control: the ↗ beside it is a button of its own.
+    pressable(head.createSpan({ text: "⏱ Time by category", attr: { "data-focus": "cal:timepanel" } }), { expanded: s.timePanelOpen });
     head.createSpan({
       cls: "brewin-count",
       text: formatDuration(grandTotalMinutes(totals)),
@@ -356,6 +461,85 @@ export class CalendarView extends ItemView {
     });
   }
 
+  /**
+   * "To plan": beside the Day, 3-day and Week grids, the work still to place — the planned day's top
+   * three and what it holds without a time, what's overdue or carried over (when that day is today),
+   * this week's bucket, and the inbox. Every row drags onto the clock, where its estimate becomes the
+   * block's length; a grid item dragged onto Inbox loses its date.
+   */
+  private renderPlanPanel(root: HTMLElement, days: string[]): void {
+    const s = this.plugin.settings;
+    const today = todayISO();
+    const day = days.includes(today) ? today : days[0];
+    const plan = dayPlan({ tasks: this.plugin.store.getTasks(), items: [], day, trackedMinutes: s.trackedDayHours * 60 });
+    const untimed = (list: Task[]) => list.filter((t) => !t.startTime);
+    const thursday = days.find((iso) => parseISO(iso)!.getUTCDay() === 4) ?? days[0];
+    const week = isoWeekOf(thursday);
+    const label = day === today ? "today" : shortDate(day);
+    const topPaths = new Set(plan.top.map((t) => t.path));
+    const base = { start: null, end: null, isCurrent: false, fallbackDate: day, emptyText: "" };
+    const sections: TaskPanelSection[] = [
+      { ...base, key: `plan-top:${day}`, kind: "none", label: `⭐ Top ${TOP_LIMIT}`, tasks: untimed(plan.top.filter((t) => t.status !== "done")), defaultOpen: true, addPlaceholder: "", emptyText: day === today ? "None starred — Plan my day, or ⋯ → Top 3." : "None starred." },
+      {
+        ...base,
+        key: `plan-day:${day}`,
+        kind: "none",
+        label: `No time yet · ${label}`,
+        tasks: untimed(plan.planned).filter((t) => !topPaths.has(t.path)),
+        defaultOpen: true,
+        addPlaceholder: `＋ Add to ${label}…`,
+        emptyText: "Everything planned has a time.",
+        onAdd: async (title) => {
+          await this.plugin.store.createTask({ title, scheduled: day, due: null, priority: "normal", contexts: [] });
+        },
+      },
+    ];
+    if (day === today && plan.leftovers.length) {
+      sections.push({ ...base, key: "plan-left", kind: "none", label: "Overdue & carried over", tasks: plan.leftovers, defaultOpen: true, addPlaceholder: "" });
+    }
+    sections.push(
+      {
+        ...base,
+        key: week,
+        kind: "week",
+        label: `This week · ${week.slice(5)}`,
+        tasks: this.plugin.store.tasksForWeek(week).filter((t) => t.status !== "done"),
+        defaultOpen: false,
+        addPlaceholder: "＋ Add for this week…",
+        emptyText: "Nothing for this week — drag a task here.",
+        onAdd: async (title) => {
+          await this.plugin.store.createTask({ title, scheduled: null, due: null, priority: "normal", contexts: [], week });
+        },
+      },
+      {
+        ...base,
+        key: "plan-inbox",
+        kind: "inbox",
+        label: "Inbox",
+        tasks: plan.inbox,
+        defaultOpen: false,
+        addPlaceholder: "＋ Add to the inbox…",
+        emptyText: "Inbox zero. Drag a task here to take its date off.",
+        onAdd: async (title) => {
+          await this.plugin.store.createTask({ title, scheduled: null, due: null, priority: "normal", contexts: [] });
+        },
+      }
+    );
+    this.renderTasksPanel(root, {
+      open: s.planPanelOpen,
+      openLabel: "🧭 To plan",
+      name: "the tasks to plan",
+      cls: "brewin-plan-panel",
+      toggle: async () => {
+        s.planPanelOpen = !s.planPanelOpen;
+        await this.plugin.saveSettings();
+        this.render();
+      },
+      fallbackBucket: null,
+      sections,
+    });
+  }
+
   /** The draggable `CalendarItem` for a Month/Week panel row. `fallbackDate` is only read for
    *  recurring-scope maths (a bucket task is almost never recurring), so any in-view day does. */
   private bucketDragItem(t: Task, fallbackDate: string): CalendarItem {
@@ -386,8 +570,10 @@ export class CalendarView extends ItemView {
       openLabel: string;
       name: string;
       toggle: () => void;
-      fallbackBucket: { kind: "week" | "month"; key: string };
+      /** Where a drop on the panel's chrome (between sections) files the task; none for a panel to drag from. */
+      fallbackBucket: { kind: "week" | "month"; key: string } | null;
       sections: TaskPanelSection[];
+      cls?: string;
     }
   ): void {
     const { open } = cfg;
@@ -395,9 +581,11 @@ export class CalendarView extends ItemView {
       (n, sec) => n + sec.tasks.filter((t) => t.status !== "done").length,
       0
     );
-    const wrap = root.createDiv({ cls: "brewin-caltasks-panel" + (open ? "" : " is-collapsed") });
-    wrap.setAttr("data-drop", cfg.fallbackBucket.kind); // "week" | "month" → handled in handleDrop
-    wrap.setAttr("data-bucket", cfg.fallbackBucket.key);
+    const wrap = root.createDiv({ cls: "brewin-caltasks-panel" + (open ? "" : " is-collapsed") + (cfg.cls ? ` ${cfg.cls}` : "") });
+    if (cfg.fallbackBucket) {
+      wrap.setAttr("data-drop", cfg.fallbackBucket.kind); // "week" | "month" → handled in handleDrop
+      wrap.setAttr("data-bucket", cfg.fallbackBucket.key);
+    }
 
     // The header doubles as the collapse toggle: the panel's fixed width squeezes the grid
     // off a phone screen, so it folds to a thin strip that still shows the open count.
@@ -436,8 +624,10 @@ export class CalendarView extends ItemView {
     });
     // The section is its own drop target — a grid task dropped anywhere in it files to this
     // bucket. A collapsed section keeps the attr on its header, so you can drop onto a fold.
-    el.setAttr("data-drop", sec.kind);
-    el.setAttr("data-bucket", sec.key);
+    if (sec.kind !== "none") {
+      el.setAttr("data-drop", sec.kind);
+      el.setAttr("data-bucket", sec.key);
+    }
 
     if (headed) {
       const h = el.createDiv({ cls: "brewin-caltasks-section-head" });
@@ -469,16 +659,26 @@ export class CalendarView extends ItemView {
 
     if (!isOpen) return;
 
-    const addInput = el
-      .createDiv({ cls: "brewin-caltasks-add" })
-      .createEl("input", { type: "text", placeholder: sec.addPlaceholder });
-    addInput.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter") return;
-      const title = addInput.value.trim();
-      if (!title) return;
-      addInput.value = "";
-      void sec.onAdd(title).then(() => this.render());
-    });
+    const onAdd = sec.onAdd;
+    if (onAdd) {
+      const addInput = el
+        .createDiv({ cls: "brewin-caltasks-add" })
+        .createEl("input", { type: "text", placeholder: sec.addPlaceholder });
+      addInput.setAttr("aria-label", sec.addPlaceholder.replace(/^＋\s*/, "").replace(/…$/, ""));
+      addInput.setAttr("data-focus", `add:${sec.key}`);
+      addInput.addEventListener("keydown", (e) => {
+        if (!isSubmitKey(e)) return;
+        const title = addInput.value.trim();
+        if (!title) return;
+        addInput.value = "";
+        void this.plugin
+          .act(async () => {
+            await onAdd(title);
+            return `Added “${title}”`;
+          })
+          .then(() => this.render());
+      });
+    }
 
     if (!sec.tasks.length) {
       el.createDiv({ cls: "brewin-caltasks-empty", text: sec.emptyText });
@@ -492,30 +692,25 @@ export class CalendarView extends ItemView {
     const done = task.status === "done";
     const row = createDiv({ cls: "brewin-caltask-row" + (done ? " done" : "") });
 
-    const cb = row.createEl("input", { type: "checkbox" });
+    const cb = row.createEl("input", { type: "checkbox", attr: { "data-focus": `check:${task.path}` } });
     cb.checked = done;
+    cb.setAttr("aria-label", done ? `Reopen “${task.title}”` : `Complete “${task.title}”`);
     cb.addEventListener("click", async (e) => {
       e.stopPropagation();
       e.preventDefault();
-      if (task.status === "done") {
-        await this.plugin.store.reopen(task);
-      } else {
-        const res = await this.plugin.store.complete(task);
-        if (!res.ok) {
-          const reasons = [
-            res.open ? `${res.open} subtask${res.open === 1 ? "" : "s"} still open` : null,
-            res.blocked ? `waiting on ${res.blocked} other task${res.blocked === 1 ? "" : "s"}` : null,
-          ]
-            .filter((r): r is string => !!r)
-            .join(" and ");
-          new Notice(`Can't complete "${task.title}" — ${reasons}.`);
-          return;
+      await this.plugin.act(async () => {
+        if (task.status === "done") {
+          await this.plugin.store.reopen(task);
+          return `Reopened “${task.title}”`;
         }
-      }
+        const res = await this.plugin.store.complete(task);
+        return res.ok ? `✓ “${task.title}”` : `Can't complete “${task.title}” — ${completionRefusal(res)}.`;
+      });
       this.render();
     });
 
-    const title = row.createDiv({ cls: "brewin-caltask-title", text: task.title });
+    const title = pressable(row.createDiv({ cls: "brewin-caltask-title", text: task.title }));
+    title.setAttr("data-focus", `title:${task.path}`);
     title.addEventListener("click", () => {
       // A draggable row's click can be the tail of a press-and-hold drop — swallow that one.
       if (dragItem && this.consumeClick()) return;
@@ -540,10 +735,10 @@ export class CalendarView extends ItemView {
 
     // Layer toggles
     const layer = (label: string, glyph: string, on: boolean, flip: () => void) => {
-      const item = bar.createDiv({ cls: "brewin-legend-toggle" + (on ? "" : " off") });
-      item.createSpan({ cls: "brewin-legend-glyph", text: glyph });
+      const item = bar.createDiv({ cls: "brewin-legend-toggle" + (on ? "" : " off"), attr: { "data-focus": `legend:${label}` } });
+      item.createSpan({ cls: "brewin-legend-glyph", text: glyph, attr: { "aria-hidden": "true" } });
       item.createSpan({ text: label });
-      item.setAttr("aria-label", (on ? "Hide " : "Show ") + label);
+      pressable(item, { label: `${label} on the calendar`, pressed: on });
       item.addEventListener("click", () => toggle(flip));
     };
     layer("Tasks", "●", s.showTasksOnCalendar, () => (s.showTasksOnCalendar = !s.showTasksOnCalendar));
@@ -555,10 +750,10 @@ export class CalendarView extends ItemView {
     // Category toggles (affect events; dimmed when the Events layer is off)
     for (const c of s.categories) {
       const hidden = s.hiddenCategories.includes(c.name);
-      const item = bar.createDiv({ cls: "brewin-legend-toggle" + (hidden || !s.showEventsOnCalendar ? " off" : "") });
+      const item = bar.createDiv({ cls: "brewin-legend-toggle" + (hidden || !s.showEventsOnCalendar ? " off" : ""), attr: { "data-focus": `legend:cat:${c.name}` } });
       item.createSpan({ cls: "brewin-legend-swatch" }).style.background = c.color;
       item.createSpan({ text: c.name });
-      item.setAttr("aria-label", (hidden ? "Show " : "Hide ") + c.name + " events");
+      pressable(item, { label: `${c.name} events`, pressed: !hidden });
       item.addEventListener("click", () =>
         toggle(() => {
           const set = new Set(s.hiddenCategories);
@@ -593,13 +788,14 @@ export class CalendarView extends ItemView {
         const cell = row.createDiv({ cls: "brewin-month-cell", attr: { "data-drop": "day", "data-date": iso } });
         if (day.getUTCMonth() !== curMonth) cell.addClass("othermonth");
         if (iso === today) cell.addClass("istoday");
-        const head = cell.createDiv({ cls: "brewin-month-daynum", text: String(day.getUTCDate()) });
+        const head = cell.createDiv({ cls: "brewin-month-daynum", text: String(day.getUTCDate()), attr: { "data-focus": `day:${iso}` } });
+        pressable(head, { label: `${day.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" })}${iso === today ? ", today" : ""} — open the day` });
         head.addEventListener("click", () => { this.view = "day"; this.anchor = iso; this.render(); });
         // Monday cell → the ISO week number ("W37"), tucked top-left; click opens that week.
         if (day.getUTCDay() === 1) {
           const wnum = isoWeekOf(iso).slice(6); // "37" | "07"
           const wk = cell.createDiv({ cls: "brewin-month-weeknum", text: "W" + wnum });
-          wk.setAttr("aria-label", `Week ${Number(wnum)} — open`);
+          pressable(wk, { label: `Week ${Number(wnum)} — open` });
           wk.addEventListener("click", (e) => {
             e.stopPropagation();
             this.view = "week";
@@ -616,7 +812,7 @@ export class CalendarView extends ItemView {
         const itemsWrap = cell.createDiv({ cls: "brewin-month-items" });
         const items = (byDay.get(iso) ?? []).filter(isChipItem);
         items.forEach((it) => itemsWrap.appendChild(this.chip(it)));
-        const more = itemsWrap.createDiv({ cls: "brewin-month-more brewin-hidden" });
+        const more = pressable(itemsWrap.createDiv({ cls: "brewin-month-more brewin-hidden" }));
         more.addEventListener("click", () => { this.view = "day"; this.anchor = iso; this.render(); });
       }
 
@@ -691,14 +887,16 @@ export class CalendarView extends ItemView {
     el.style.top = `${seg.lane * BAR_H}px`;
     el.setText((isTask ? "● " : "") + (s.recurring ? "🔁 " : "") + (seg.continuesLeft ? "◀ " : "") + s.title);
     if (s.location) el.setAttr("title", `📍 ${s.location}`);
+    pressable(el, { label: itemLabel({ kind: s.kind, title: s.title }) + (s.recurring ? ", repeats" : "") });
     el.addEventListener("click", (e) => {
       e.stopPropagation();
       if (this.consumeClick()) return;
       if (isTask) this.openEdit({ kind: "task", path: s.path, title: s.title, date: s.start, allDay: true, start: null, end: null, done: s.done, category: s.category, recurring: s.recurring });
       else this.openEventByPath(s.path, s.start);
     });
-    // Matches the chip's own behaviour: only an event gets a right-click menu (edit/open/delete).
+    // Right-click: an event's menu (edit, open, delete), or a task's (edit, postpone, skip, open).
     if (!isTask) el.addEventListener("contextmenu", (e) => this.eventContextMenu(e, s.path, s.start));
+    else el.addEventListener("contextmenu", (e) => this.taskContextMenu(e, s.path, s.start));
     // Reuse the generic pointer-drag: a whole-span move sets the item's start to the drop day.
     this.makeDraggable(el, {
       kind: s.kind,
@@ -717,18 +915,18 @@ export class CalendarView extends ItemView {
 
   private chip(it: CalendarItem): HTMLElement {
     const el = createDiv({ cls: `brewin-chip-item kind-${it.kind} ${it.done ? "done" : ""}` });
-    if (it.kind === "event" || it.kind === "project" || it.kind === "training") {
-      const color = categoryColor(this.plugin.settings, it.category);
+    if (it.kind === "event" || it.kind === "project" || it.kind === "training" || it.kind === "external") {
+      const color = it.external?.color ?? categoryColor(this.plugin.settings, it.category);
       el.style.borderLeftColor = color;
       el.style.background = `color-mix(in srgb, ${color} 20%, var(--background-modifier-hover))`;
     }
-    if (it.kind === "project") {
-      el.setAttr("aria-label", it.path.split("/").pop()?.replace(/\.md$/, "") ?? "");
-    }
+    const project = it.kind === "project" || it.kind === "note" ? ` (${it.path.split("/").pop()?.replace(/\.md$/, "") ?? ""})` : "";
+    pressable(el, { label: itemLabel(it) + project + (it.done ? ", done" : "") });
+    el.setAttr("data-focus", `item:${it.path}:${it.date}:${it.start ?? ""}:${it.slotTime ?? ""}`);
     if (it.kind === "event" && it.location) el.setAttr("title", `📍 ${it.location}`);
     if (it.category === "Archived") el.addClass("brewin-archived");
     const glyph =
-      it.kind === "task" ? "●" : it.kind === "event" ? "▮" : it.kind === "project" ? "◆" : it.kind === "training" ? "▲" : it.kind === "birthday" ? "🎂" : "◇";
+      it.kind === "task" ? "●" : it.kind === "event" ? "▮" : it.kind === "project" ? "◆" : it.kind === "training" ? "▲" : it.kind === "birthday" ? "🎂" : it.kind === "note" ? "☐" : it.kind === "external" ? "📆" : "◇";
     el.createSpan({ cls: "g", text: glyph + " " });
     // A training session repeats by plan, not by RRULE — the 🔁 would be noise on every one.
     const label = (it.recurring && it.kind !== "training" ? "🔁 " : "") + (it.start ? `${it.start} ${it.title}` : it.title);
@@ -736,13 +934,16 @@ export class CalendarView extends ItemView {
     el.addEventListener("click", (e) => {
       e.stopPropagation();
       if (this.consumeClick()) return;
-      else if (it.kind === "project") void this.openProjectLine(it);
+      else if (it.kind === "project" || it.kind === "note") void this.plugin.openStepAt(it.path, it.line ?? 0, () => this.render());
       else if (it.kind === "training") void this.plugin.openTraining(it);
       else if (it.kind === "birthday") void this.plugin.openPath(it.path);
+      else if (it.kind === "external") this.plugin.openExternal(it);
       else this.openEdit(it);
     });
     if (it.kind === "event") {
       el.addEventListener("contextmenu", (e) => this.eventContextMenu(e, it.path, it.date));
+    } else if (it.kind === "task") {
+      el.addEventListener("contextmenu", (e) => this.taskContextMenu(e, it.path, it.date));
     }
     this.makeDraggable(el, it);
     return el;
@@ -758,7 +959,8 @@ export class CalendarView extends ItemView {
     const today = todayISO();
     for (const iso of days) {
       const d = parseISO(iso)!;
-      const h = header.createDiv({ cls: "brewin-tg-daycol" + (iso === today ? " istoday" : "") });
+      const h = header.createDiv({ cls: "brewin-tg-daycol" + (iso === today ? " istoday" : ""), attr: { "data-focus": `dayhead:${iso}` } });
+      pressable(h, { label: `${d.toLocaleDateString(undefined, { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" })}${iso === today ? ", today" : ""} — open the day` });
       h.createDiv({ cls: "brewin-tg-dow", text: d.toLocaleString("default", { weekday: "short", timeZone: "UTC" }) });
       h.createDiv({ cls: "brewin-tg-date", text: String(d.getUTCDate()) });
       h.addEventListener("click", () => { this.view = "day"; this.anchor = iso; this.render(); });
@@ -864,8 +1066,8 @@ export class CalendarView extends ItemView {
         const box = timeBox(it.start, it.end, hourPx);
         const place = places[idx];
         const ev = col.createDiv({ cls: `brewin-tg-event kind-${it.kind} ${it.done ? "done" : ""}` });
-        if (it.kind === "event" || it.kind === "training") {
-          const color = categoryColor(this.plugin.settings, it.category);
+        if (it.kind === "event" || it.kind === "training" || it.kind === "external") {
+          const color = it.external?.color ?? categoryColor(this.plugin.settings, it.category);
           ev.style.borderLeftColor = color;
           ev.style.background = `color-mix(in srgb, ${color} 25%, var(--background-primary))`;
         }
@@ -875,6 +1077,8 @@ export class CalendarView extends ItemView {
         ev.style.left = `calc(${(place.column / place.columns) * 100}% + 2px)`;
         ev.style.width = `calc(${(place.span / place.columns) * 100}% - 4px)`;
         if (place.columns > 1) ev.addClass("shared");
+        pressable(ev, { label: itemLabel(it) + (it.done ? ", done" : "") });
+        ev.setAttr("data-focus", `item:${it.path}:${it.date}:${it.start ?? ""}:${it.slotTime ?? ""}`);
         ev.createDiv({ cls: "t", text: (it.kind === "training" ? (it.done ? "✓ " : "▲ ") : it.recurring ? "🔁 " : "") + it.title });
         if (it.start) ev.createDiv({ cls: "time", text: it.end ? `${it.start}–${it.end}` : it.start });
         if (it.location) ev.createDiv({ cls: "loc", text: `📍 ${it.location}` });
@@ -888,25 +1092,187 @@ export class CalendarView extends ItemView {
           const currentTask = it.slotTime ? this.plugin.store.getByPath(it.path) : null;
           const currentOcc = currentTask ? (currentTask.recurrenceAnchor === "due" ? currentTask.due : currentTask.scheduled) : null;
           if (it.kind === "training") void this.plugin.openTraining(it);
+          else if (it.kind === "external") this.plugin.openExternal(it);
           else if (it.slotTime && currentTask && it.date === currentOcc) void this.toggleSlot(it);
           else this.openEdit(it);
         });
         if (it.kind === "event") {
           ev.addEventListener("contextmenu", (e) => this.eventContextMenu(e, it.path, it.date));
+        } else if (it.kind === "task") {
+          ev.addEventListener("contextmenu", (e) => this.taskContextMenu(e, it.path, it.date));
         }
         this.makeDraggable(ev, it);
+        if ((it.kind === "task" || it.kind === "event") && it.start && it.end && !it.slotTime) this.addResizeHandle(ev, it, col);
       });
+      this.wireRangeSelect(col, iso);
     }
     this.positionNowLines();
 
-    // Focus the grid on the current time when today is on screen, otherwise 07:00.
+    // Focus the grid on the current time when today is on screen, otherwise 07:00 — unless this is a
+    // redraw of the same view, which stays where it was scrolled to.
     const showsToday = days.includes(today);
     const focusMinutes = showsToday ? nowMinutes() : 7 * 60;
+    const keep = this.keepGridScroll;
     window.setTimeout(() => {
+      if (keep !== null) {
+        body.scrollTop = keep;
+        return;
+      }
       const y = (focusMinutes / 60) * hourPx;
       // Sit the moment about a third down the viewport so there's context either side.
       body.scrollTop = Math.max(0, y - body.clientHeight / 3);
     }, 0);
+  }
+
+  // ── Resize and mark-a-span (pointer-based → works on desktop and touch) ──
+
+  /**
+   * The bottom edge of a timed task or event: drag it to change when the block ends — snapped as a
+   * drop is, and never shorter than one snap. Its own handle, so it never starts the block's drag.
+   */
+  private addResizeHandle(block: HTMLElement, it: CalendarItem, col: HTMLElement): void {
+    const handle = block.createDiv({ cls: "brewin-tg-resize", attr: { "aria-hidden": "true", title: "Drag to change when it ends" } });
+    handle.addEventListener("pointerdown", (down: PointerEvent) => {
+      if (down.button !== 0 && down.pointerType === "mouse") return;
+      down.preventDefault();
+      down.stopPropagation(); // not the block's press-and-hold drag, and not its click
+      const start = minutesOfDay(it.start) ?? 0;
+      const snap = Math.min(15, this.slotMinutes);
+      let end = minutesOfDay(it.end) ?? start + 60;
+      const doc = handle.doc;
+      const timeEl = block.querySelector<HTMLElement>(".time");
+      try {
+        handle.setPointerCapture(down.pointerId);
+      } catch {
+        /* best-effort */
+      }
+      block.addClass("brewin-resizing");
+      const move = (m: PointerEvent) => {
+        end = Math.max(start + snap, this.timeFromY(col, m.clientY));
+        block.style.height = `${((end - start) / 60) * this.hourPx}px`;
+        timeEl?.setText(`${it.start}–${formatHM(end)}`);
+      };
+      const finish = (keep: boolean) => {
+        doc.removeEventListener("pointermove", move);
+        doc.removeEventListener("pointerup", up);
+        doc.removeEventListener("pointercancel", cancel);
+        block.removeClass("brewin-resizing");
+        this.suppressClickUntil = Date.now() + CLICK_AFTER_DROP_MS;
+        if (keep) void this.resizeTo(it, formatHM(end));
+        else this.render();
+      };
+      const up = () => finish(true);
+      const cancel = () => finish(false);
+      doc.addEventListener("pointermove", move);
+      doc.addEventListener("pointerup", up);
+      doc.addEventListener("pointercancel", cancel);
+    });
+  }
+
+  /** A block's new end: written for a one-off; a repeating one asks which occurrences, as a move does. */
+  private async resizeTo(it: CalendarItem, end: string): Promise<void> {
+    if (end === it.end || !it.start) return void this.render();
+    const start = it.start;
+    if (it.kind === "task") {
+      const task = this.plugin.store.getByPath(it.path);
+      if (!task) return;
+      if (task.recurrence) {
+        new RecurrenceScopeModal(
+          this.app,
+          async (scope) => {
+            if (!scope) return void this.render();
+            await this.plugin.act(async () => {
+              await this.plugin.store.applyRecurringEdit(task, it.date, scope, { ...this.taskFields(task, it.date), startTime: start, endTime: end });
+              return `“${task.title}” now ends at ${end}${scope === "single" ? " — this time only" : ""}`;
+            });
+            this.render();
+          },
+          { title: "Change a repeating task", prompt: `“${task.title}” repeats. Which occurrences should end at ${end}?` }
+        ).open();
+        return;
+      }
+      await this.plugin.act(async () => {
+        await this.plugin.store.scheduleAt(task, it.date, start, end);
+        return `“${task.title}” now ends at ${end}`;
+      });
+    } else if (it.kind === "event") {
+      const ev = this.plugin.events.getByPath(it.path);
+      if (!ev) return;
+      if (ev.endDate) {
+        new Notice("A block running over several days is changed in its window.");
+        return void this.render();
+      }
+      if (ev.recurrence) {
+        new RecurrenceScopeModal(
+          this.app,
+          async (scope) => {
+            if (!scope) return void this.render();
+            await this.plugin.act(async () => {
+              await this.plugin.events.applyRecurringEdit(ev, it.date, scope, {
+                title: ev.title,
+                date: it.date,
+                endDate: null,
+                allDay: false,
+                startTime: start,
+                endTime: end,
+                category: ev.originalCategory,
+                recurrence: ev.recurrence,
+              });
+              return `“${ev.title}” now ends at ${end}${scope === "single" ? " — this time only" : ""}`;
+            });
+            this.render();
+          },
+          { title: "Change a repeating event", prompt: `“${ev.title}” repeats. Which occurrences should end at ${end}?` }
+        ).open();
+        return;
+      }
+      await this.plugin.act(async () => {
+        await this.plugin.events.setEnd(ev, end);
+        return `“${ev.title}” now ends at ${end}`;
+      });
+    }
+    this.render();
+  }
+
+  /**
+   * With a mouse, press on empty grid and drag to mark a span — then choose a task or an event for it.
+   * (A finger keeps press-and-hold, which asks the same for one point.)
+   */
+  private wireRangeSelect(col: HTMLElement, dateISO: string): void {
+    col.addEventListener("pointerdown", (down: PointerEvent) => {
+      if (down.pointerType !== "mouse" || down.button !== 0) return;
+      if ((down.target as HTMLElement | null)?.closest(".brewin-tg-event")) return;
+      const doc = col.doc;
+      const snap = Math.min(15, this.slotMinutes);
+      const from = this.timeFromY(col, down.clientY);
+      let to = from;
+      let box: HTMLElement | null = null;
+      const span = () => [Math.min(from, to), Math.max(from, to) + snap] as const;
+      const move = (m: PointerEvent) => {
+        if (!box && Math.abs(m.clientY - down.clientY) < 6) return;
+        to = this.timeFromY(col, m.clientY);
+        box ??= col.createDiv({ cls: "brewin-snap-preview brewin-range-preview" });
+        const [lo, hi] = span();
+        box.style.top = `${(lo / 60) * this.hourPx}px`;
+        box.style.height = `${((hi - lo) / 60) * this.hourPx}px`;
+        box.setText(`${formatHM(lo)}–${formatHM(hi)}`);
+      };
+      const up = (u: PointerEvent) => {
+        doc.removeEventListener("pointermove", move);
+        doc.removeEventListener("pointerup", up);
+        if (!box) return; // a click, not a drag
+        box.remove();
+        const [lo, hi] = span();
+        this.createMenuAt(u.clientX, u.clientY, dateISO, formatHM(lo), formatHM(Math.min(hi, 24 * 60 - 1)));
+      };
+      doc.addEventListener("pointermove", move);
+      doc.addEventListener("pointerup", up);
+    });
+  }
+
+  /** A task's fields, for writing an edited occurrence of it. */
+  private taskFields(task: Task, scheduled: string): NewTaskFields {
+    return fieldsOf(task, scheduled);
   }
 
   // ── Drag & drop (pointer-based → works on desktop and touch) ──
@@ -917,7 +1283,8 @@ export class CalendarView extends ItemView {
   private makeDraggable(el: HTMLElement, item: CalendarItem): void {
     // Project tasks belong to their project note, training to the Fitness plan and a birthday to
     // the person; none is this calendar's to move.
-    if (item.kind === "project" || item.kind === "training" || item.kind === "birthday") return;
+    // Another calendar's events are that calendar's.
+    if (item.kind === "project" || item.kind === "training" || item.kind === "birthday" || item.kind === "external") return;
     el.addClass("brewin-draggable");
 
     let ghost: HTMLElement | null = null;
@@ -938,7 +1305,8 @@ export class CalendarView extends ItemView {
         el.addClass("brewin-drag-ready");
         el.addClass("brewin-drag-src");
         this.contentEl.addClass("brewin-is-dragging");
-        ghost = document.body.createDiv({ cls: "brewin-drag-ghost" });
+        // On this pane's own document: in a pop-out window the main window's body is elsewhere.
+        ghost = el.doc.body.createDiv({ cls: "brewin-drag-ghost" });
         ghost.setText(item.title);
         hapticTick();
       },
@@ -952,8 +1320,8 @@ export class CalendarView extends ItemView {
       },
       onDrop: (x, y) => {
         teardown();
-        // A drag always ends with a click event; swallow it so the note doesn't also open.
-        this.suppressClick = true;
+        // A mouse drag ends with a click; swallow it so the note doesn't also open.
+        this.suppressClickUntil = Date.now() + CLICK_AFTER_DROP_MS;
         void this.handleDrop(item, x, y);
       },
       onCancel: teardown,
@@ -961,7 +1329,7 @@ export class CalendarView extends ItemView {
   }
 
   private dropTargetAt(x: number, y: number): HTMLElement | null {
-    const el = document.elementFromPoint(x, y) as HTMLElement | null;
+    const el = this.contentEl.doc.elementFromPoint(x, y) as HTMLElement | null;
     return el?.closest("[data-drop]") as HTMLElement | null;
   }
 
@@ -985,9 +1353,32 @@ export class CalendarView extends ItemView {
       await this.dropIntoBucket(item, target, type);
       return;
     }
+    // The "To plan" panel's Inbox: no date at all.
+    if (type === "inbox") {
+      const task = item.kind === "task" ? this.plugin.store.getByPath(item.path) : null;
+      if (!task) return void new Notice("Only tasks can go back to the inbox.");
+      if (task.recurrence) return void new Notice(`“${task.title}” repeats — edit the series to change when it happens.`);
+      await this.plugin.act(async () => {
+        await this.plugin.store.backToInbox({ ...task, week: null, month: null });
+        return `“${task.title}” is back in the inbox`;
+      });
+      this.render();
+      return;
+    }
 
     const date = target.getAttribute("data-date");
     if (!date) return; // day / all-day / time targets all carry a concrete date
+
+    // A checkbox task in a note: its line gets the day (an inline task has no clock time).
+    if (item.kind === "note") {
+      const step = await this.plugin.findStep(item.path, item.line ?? -1);
+      if (!step) return void new Notice("That line has changed in its note since it was read.");
+      await this.plugin.act(async () =>
+        (await new ProjectTaskSource(this.app, this.plugin.settings).setDate(step, "scheduled", date)) ? `“${step.text}” → ${shortDate(date)}` : null
+      );
+      this.render();
+      return;
+    }
 
     if (item.kind === "task") {
       const stored = this.plugin.store.getByPath(item.path);
@@ -1002,30 +1393,33 @@ export class CalendarView extends ItemView {
         this.moveRecurringTask(task, item.date, date, type, target, y);
         return;
       }
-      if (type === "time") {
-        // Dropped into the hour grid → give it a time block, keeping its duration if it
-        // already had one, otherwise the default length.
-        const minutes = this.timeFromY(target, y);
-        const start = formatHM(minutes);
-        const dur = task.startTime && task.endTime ? durationMinutes(task.startTime, task.endTime) : null;
-        await this.plugin.store.scheduleAt(
-          task,
-          date,
-          start,
-          dur ? addMinutesHM(start, dur) : null,
-          this.plugin.settings.defaultTaskMinutes
-        );
-        new Notice(`${task.title} → ${date} ${start}`);
-      } else if (type === "allday") {
-        // The ALL DAY band explicitly means "no particular time".
-        await this.plugin.store.scheduleAt(task, date, null, null);
-        new Notice(`${task.title} → ${date}, all day`);
-      } else {
+      await this.plugin.act(async () => {
+        if (type === "time") {
+          // Dropped into the hour grid → give it a time block, keeping its duration if it
+          // already had one, otherwise the default length.
+          const minutes = this.timeFromY(target, y);
+          const start = formatHM(minutes);
+          // Its own length when it had times; else its estimate; else the default block.
+          const dur = (task.startTime && task.endTime ? durationMinutes(task.startTime, task.endTime) : null) ?? (task.estimate || null);
+          await this.plugin.store.scheduleAt(
+            task,
+            date,
+            start,
+            dur ? addMinutesHM(start, dur) : null,
+            this.plugin.settings.defaultTaskMinutes
+          );
+          return `“${task.title}” → ${shortDate(date)} ${start}`;
+        }
+        if (type === "allday") {
+          // The ALL DAY band explicitly means "no particular time".
+          await this.plugin.store.scheduleAt(task, date, null, null);
+          return `“${task.title}” → ${shortDate(date)}, all day`;
+        }
         // A month cell just changes the day — keep any time the task already had, or
         // dragging a 09:00 task across the month would silently strip it.
         await this.plugin.store.setScheduled(task, date);
-        new Notice(`Moved to ${date}`);
-      }
+        return `“${task.title}” → ${shortDate(date)}`;
+      });
       this.render();
       return;
     } else if (item.kind === "event") {
@@ -1047,19 +1441,17 @@ export class CalendarView extends ItemView {
         return;
       }
 
-      await this.plugin.events.reschedule(ev, date, intent);
-      new Notice(
-        intent.kind === "time"
-          ? `${ev.title} → ${date} ${intent.start}`
+      await this.plugin.act(async () => {
+        await this.plugin.events.reschedule(ev, date, intent);
+        return intent.kind === "time"
+          ? `“${ev.title}” → ${shortDate(date)} ${intent.start}`
           : intent.kind === "allDay"
-            ? `${ev.title} → ${date}, all day`
-            : `Moved to ${date}`
-      );
+            ? `“${ev.title}” → ${shortDate(date)}, all day`
+            : `“${ev.title}” → ${shortDate(date)}`;
+      });
       this.render();
       return;
     }
-    new Notice(`Moved to ${date}`);
-    this.render();
   }
 
   /**
@@ -1081,15 +1473,17 @@ export class CalendarView extends ItemView {
     }
     const key = target.getAttribute("data-bucket");
     if (!key) return;
-    await this.plugin.store.updateFields(task, {
-      scheduled: null,
-      startTime: null,
-      endTime: null,
-      endDate: null,
-      week: kind === "week" ? key : null,
-      month: kind === "month" ? key : null,
+    await this.plugin.act(async () => {
+      await this.plugin.store.updateFields(task, {
+        scheduled: null,
+        startTime: null,
+        endTime: null,
+        endDate: null,
+        week: kind === "week" ? key : null,
+        month: kind === "month" ? key : null,
+      });
+      return `“${task.title}” → this ${kind}`;
     });
-    new Notice(`${task.title} → this ${kind}`);
     this.render();
   }
 
@@ -1118,23 +1512,23 @@ export class CalendarView extends ItemView {
       this.app,
       async (scope) => {
         if (!scope) return; // dismissed — leave the series untouched
-        await this.plugin.events.applyRecurringEdit(ev, occurrenceISO, scope, {
-          title: ev.title,
-          date: newDate,
-          endDate,
-          allDay: toAllDay,
-          startTime: start,
-          endTime: end,
-          category: ev.originalCategory,
-          recurrence: ev.recurrence,
-        });
-        new Notice(
-          scope === "single"
-            ? `"${ev.title}" moved to ${newDate} — this occurrence only.`
+        await this.plugin.act(async () => {
+          await this.plugin.events.applyRecurringEdit(ev, occurrenceISO, scope, {
+            title: ev.title,
+            date: newDate,
+            endDate,
+            allDay: toAllDay,
+            startTime: start,
+            endTime: end,
+            category: ev.originalCategory,
+            recurrence: ev.recurrence,
+          });
+          return scope === "single"
+            ? `“${ev.title}” moved to ${shortDate(newDate)} — this occurrence only`
             : scope === "following"
-              ? `"${ev.title}" and later occurrences moved to ${newDate}.`
-              : `Every "${ev.title}" moved.`
-        );
+              ? `“${ev.title}” and later occurrences moved to ${shortDate(newDate)}`
+              : `Every “${ev.title}” moved`;
+        });
         this.render();
       },
       {
@@ -1165,7 +1559,7 @@ export class CalendarView extends ItemView {
       startTime = formatHM(this.timeFromY(target, y));
       const dur = task.startTime && task.endTime
         ? durationMinutes(task.startTime, task.endTime)
-        : this.plugin.settings.defaultTaskMinutes;
+        : task.estimate || this.plugin.settings.defaultTaskMinutes;
       endTime = addMinutesHM(startTime, dur);
     } else if (type === "allday") {
       startTime = null;
@@ -1176,37 +1570,20 @@ export class CalendarView extends ItemView {
       endTime = task.endTime;
     }
 
-    const fields: NewTaskFields = {
-      title: task.title,
-      scheduled: newDate,
-      startTime,
-      endTime,
-      due: task.due,
-      priority: task.priority,
-      contexts: task.contexts,
-      parent: task.parent,
-      recurrence: task.recurrence,
-      recurrenceAnchor: task.recurrenceAnchor,
-      endDate: task.endDate,
-      estimate: task.estimate,
-      remind: task.remind,
-      remindStart: task.remindStart,
-      times: task.times,
-      dependsOn: task.dependsOn,
-    };
+    const fields: NewTaskFields = { ...this.taskFields(task, newDate), startTime, endTime };
 
     new RecurrenceScopeModal(
       this.app,
       async (scope) => {
         if (!scope) return; // dismissed — leave the series untouched
-        await this.plugin.store.applyRecurringEdit(task, occurrenceISO, scope, fields);
-        new Notice(
-          scope === "single"
-            ? `"${task.title}" moved to ${newDate} — this occurrence only.`
+        await this.plugin.act(async () => {
+          await this.plugin.store.applyRecurringEdit(task, occurrenceISO, scope, fields);
+          return scope === "single"
+            ? `“${task.title}” moved to ${shortDate(newDate)} — this occurrence only`
             : scope === "following"
-              ? `"${task.title}" and later occurrences moved to ${newDate}.`
-              : `Every "${task.title}" moved.`
-        );
+              ? `“${task.title}” and later occurrences moved to ${shortDate(newDate)}`
+              : `Every “${task.title}” moved`;
+        });
         this.render();
       },
       {
@@ -1235,8 +1612,8 @@ export class CalendarView extends ItemView {
 
   /** Returns true (and resets) if the pending click should be swallowed after a drag. */
   private consumeClick(): boolean {
-    if (this.suppressClick) {
-      this.suppressClick = false;
+    if (Date.now() < this.suppressClickUntil) {
+      this.suppressClickUntil = 0;
       return true;
     }
     return false;
@@ -1271,9 +1648,9 @@ export class CalendarView extends ItemView {
   }
 
   /** The menu itself — same choice either way, just prefilled with where the press landed. */
-  private createMenuAt(x: number, y: number, dateISO: string, time: string | null): void {
+  private createMenuAt(x: number, y: number, dateISO: string, time: string | null, end: string | null = null): void {
     const menu = new Menu();
-    const label = time ? `${dateISO} ${time}` : dateISO;
+    const label = time ? `${dateISO} ${time}${end ? `–${end}` : ""}` : dateISO;
     menu.addItem((i) =>
       i
         .setTitle(`New task · ${label}`)
@@ -1282,6 +1659,7 @@ export class CalendarView extends ItemView {
           new CaptureModal(this.app, this.plugin.store, this.plugin.settings, () => this.render(), undefined, undefined, {
             scheduled: dateISO,
             startTime: time ?? undefined,
+            endTime: end ?? undefined,
           })
             .withTemplateLibrary(this.plugin.templates)
             .open()
@@ -1292,7 +1670,7 @@ export class CalendarView extends ItemView {
         .setTitle(`New event · ${label}`)
         .setIcon("calendar")
         .onClick(() =>
-          new EventModal(this.app, this.plugin.events, this.plugin.settings, () => this.render(), dateISO, undefined, time ?? undefined)
+          new EventModal(this.app, this.plugin.events, this.plugin.settings, () => this.render(), dateISO, undefined, time ?? undefined, end ?? undefined)
             .withTemplateLibrary(this.plugin.templates)
             .open()
         )
@@ -1343,10 +1721,34 @@ export class CalendarView extends ItemView {
     menu.showAtMouseEvent(e);
   }
 
+  /**
+   * Right-click a task on the calendar → edit, postpone, skip this time, or open its note. A repeating
+   * task's later dates are previews: postponing or skipping is offered on the date it is on now.
+   */
+  private taskContextMenu(e: MouseEvent, path: string, dateISO: string): void {
+    const task = this.plugin.store.getByPath(path);
+    if (!task) return;
+    e.preventDefault();
+    const menu = new Menu();
+    menu.addItem((i) =>
+      i.setTitle("Edit task…").setIcon("pencil").onClick(() => new CaptureModal(this.app, this.plugin.store, this.plugin.settings, () => this.render(), task, undefined, undefined, dateISO).open())
+    );
+    menu.addItem((i) => i.setTitle("Open note").setIcon("file").onClick(() => this.openNote(path)));
+    if (!task.recurrence || dateISO === currentOccurrenceISO(task)) {
+      menu.addSeparator();
+      this.plugin.addPostponeItems(menu, task, () => this.render());
+    }
+    menu.showAtMouseEvent(e);
+  }
+
   /** Shared delete flow — recurring events ask which occurrences to remove. */
   private deleteEvent(ev: EventItem, occurrenceISO: string): void {
-    const finish = (msg: string) => {
-      new Notice(msg);
+    // Undoable: the toast brings the note back, or the occurrence.
+    const finish = async (msg: string, work: () => Promise<void>) => {
+      await this.plugin.act(async () => {
+        await work();
+        return msg;
+      });
       this.render();
     };
     if (ev.recurrence) {
@@ -1354,8 +1756,7 @@ export class CalendarView extends ItemView {
         this.app,
         async (scope) => {
           if (!scope) return;
-          await this.plugin.events.deleteOccurrence(ev, occurrenceISO, scope);
-          finish(scope === "all" ? `Deleted "${ev.title}".` : `Updated "${ev.title}".`);
+          await finish(scope === "all" ? `Deleted “${ev.title}”` : `Updated “${ev.title}”`, () => this.plugin.events.deleteOccurrence(ev, occurrenceISO, scope));
         },
         {
           title: "Delete recurring event",
@@ -1374,19 +1775,9 @@ export class CalendarView extends ItemView {
       title: "Delete event",
       body: `"${ev.title}" will be moved to your vault's trash — recoverable via Obsidian's "Deleted files" setting.`,
       cta: "Delete",
-      onConfirm: async () => {
-        await this.plugin.events.deleteEvent(ev);
-        finish(`Deleted "${ev.title}".`);
-      },
+      danger: true,
+      onConfirm: () => void finish(`Deleted “${ev.title}”`, () => this.plugin.events.deleteEvent(ev)),
     }).open();
-  }
-
-  /** Open a project note at the exact line of the surfaced task. */
-  private async openProjectLine(item: CalendarItem): Promise<void> {
-    const f = this.app.vault.getAbstractFileByPath(item.path);
-    if (!(f instanceof TFile)) return;
-    const leaf = this.app.workspace.getLeaf(false);
-    await leaf.openFile(f, item.line != null ? { eState: { line: item.line } } : undefined);
   }
 
   /** Show a preview box at the snapped time while dragging a timed event over a day column. */
@@ -1395,10 +1786,9 @@ export class CalendarView extends ItemView {
     const timeable = item.kind === "event" || item.kind === "task";
     if (timeable && target?.getAttribute("data-drop") === "time") {
       const mins = this.timeFromY(target, y);
-      // An all-day item being given a time has no duration yet — preview the default block.
-      const dur = item.allDay
-        ? this.plugin.settings.defaultTaskMinutes
-        : durationMinutes(item.start, item.end);
+      // An all-day item being given a time has no duration yet — preview its estimate, or the default block.
+      const estimate = item.kind === "task" ? this.plugin.store.getByPath(item.path)?.estimate : null;
+      const dur = item.allDay ? estimate || this.plugin.settings.defaultTaskMinutes : durationMinutes(item.start, item.end);
       if (!this.snapEl || this.snapEl.parentElement !== target) {
         this.hideSnap();
         this.snapEl = target.createDiv({ cls: "brewin-snap-preview" });
@@ -1424,16 +1814,16 @@ export class CalendarView extends ItemView {
   private async toggleSlot(item: CalendarItem): Promise<void> {
     const task = this.plugin.store.getByPath(item.path);
     if (!task || !item.slotTime) return;
-    const res = await this.plugin.store.toggleSlot(task, item.slotTime, item.date);
-    if (!res.ok) {
-      new Notice(`Can't complete — ${res.open} subtask${res.open === 1 ? "" : "s"} still open.`);
-      return;
-    }
-    const after = this.plugin.store.getByPath(item.path);
-    if (after) {
-      const p = slotProgress(after.times ?? [], after.completeSlots ?? {}, item.date);
-      if (p.dayComplete) new Notice(`"${after.title}" done for the day.`);
-    }
+    const slot = item.slotTime;
+    // Counted from before the tick — the note itself may not have been re-read yet.
+    const before = slotProgress(task.times ?? [], task.completeSlots ?? {}, item.date);
+    const wasDone = !!task.completeSlots?.[item.date]?.includes(slot);
+    await this.plugin.act(async () => {
+      const res = await this.plugin.store.toggleSlot(task, slot, item.date);
+      if (!res.ok) return `Can't complete “${task.title}” — ${completionRefusal(res)}.`;
+      if (wasDone) return `${slot} unticked — “${task.title}”`;
+      return before.done + 1 >= before.total ? `“${task.title}” done for the day` : `${slot} ticked — “${task.title}”`;
+    });
     this.render();
   }
 

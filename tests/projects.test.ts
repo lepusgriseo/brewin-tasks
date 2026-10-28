@@ -39,6 +39,7 @@ test("reads the fields Project HQ uses, empty ones as empty", () => {
     next: null,
     waiting_on: "",
     due: "2026-10-04",
+    started: "2026-05-11",
     completed: false, // as one real note has it
   });
   assert.deepEqual(p, {
@@ -48,6 +49,7 @@ test("reads the fields Project HQ uses, empty ones as empty", () => {
     next: "",
     waitingOn: "",
     due: "2026-10-04",
+    started: "2026-05-11",
     completed: null,
   });
   assert.equal(projectFromFrontmatter("p.md", "P", { status: "paused" }).status, null);

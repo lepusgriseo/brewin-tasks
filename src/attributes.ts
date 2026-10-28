@@ -39,8 +39,8 @@ export const ATTR_KINDS: { kind: AttrKind; label: string; icon: string; hint: st
 export const RESERVED_KEYS = new Set([
   "title", "status", "flag", "scheduled", "endDate", "startTime", "endTime", "due", "priority", "estimate",
   "remind", "remind_start", "contexts", "recurrence", "recurrence_anchor", "complete_instances",
-  "recurrence_exdates", "times", "complete_slots", "on_completion", "created", "completed", "parent",
-  "depends_on", "project", "month", "week", "time_log", "time_spent", "timer_started", "modified",
+  "recurrence_exdates", "recurrence_from", "times", "complete_slots", "on_completion", "created", "completed", "parent",
+  "depends_on", "project", "month", "week", "time_log", "time_spent", "timer_started", "modified", "top",
   "tags", "aliases", "cssclasses", "cssclass", "up", "publish", "position",
 ].map((k) => k.toLowerCase()));
 

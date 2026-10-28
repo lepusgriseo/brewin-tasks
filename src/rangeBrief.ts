@@ -20,6 +20,8 @@ export interface RangeBrief {
   birthdays: CalendarItem[];
   /** Focus-timer time per task in the range, most first. */
   tracked: { path: string; title: string; minutes: number }[];
+  /** Tasks starred as a day's top three on a day in the range, and how many of them are done. */
+  top: { starred: number; done: number };
 }
 
 /**
@@ -28,6 +30,7 @@ export interface RangeBrief {
  */
 export function rangeBrief(o: { from: string; to: string; today: string; items: CalendarItem[]; tasks: Task[]; focusCategory?: string | null }): RangeBrief {
   const inRange = o.items.filter((it) => it.date >= o.from && it.date <= o.to);
+  const starred = o.tasks.filter((t) => !!t.top && t.top >= o.from && t.top <= o.to);
   return {
     from: o.from,
     to: o.to,
@@ -35,5 +38,6 @@ export function rangeBrief(o: { from: string; to: string; today: string; items: 
     events: sortItems(inRange.filter((it) => it.kind === "event" && !it.recurring && (!o.focusCategory || it.category !== o.focusCategory))),
     birthdays: sortItems(inRange.filter((it) => it.kind === "birthday")),
     tracked: trackedInRange(o.tasks, o.from, o.to),
+    top: { starred: starred.length, done: starred.filter((t) => t.status === "done").length },
   };
 }

@@ -5,22 +5,33 @@
 
 import type BrewinTasksPlugin from "./main";
 import { FocusModal } from "./focusModal";
-import { clockText } from "./timeTrack";
+import { clockText, pomodoroPhase } from "./timeTrack";
 
 export class FloatingTimer {
   private el: HTMLElement | null = null;
   private clockEl: HTMLElement | null = null;
   private titleEl: HTMLElement | null = null;
   private tick: number | null = null;
+  private mainEl: HTMLElement | null = null;
 
   constructor(private plugin: BrewinTasksPlugin) {}
 
-  /** Show, refresh or hide it to match the clock and whether its window is open. */
+  /**
+   * Show, refresh or hide it to match the clock and whether its window is open. The task's title is
+   * looked up here, when the clock starts, stops or the notes change — not in the once-a-second paint,
+   * where finding it meant reading every task in the vault every second.
+   */
   update(): void {
     const run = this.plugin.timer.running;
     const show = !!run && this.plugin.settings.timerFloating && !FocusModal.current;
     if (!show) return this.remove();
     if (!this.el) this.build();
+    const title = this.plugin.store.getByPath(run.path)?.title ?? run.path.split("/").pop()!.replace(/\.md$/, "");
+    if (this.titleEl && this.titleEl.textContent !== title) {
+      this.titleEl.setText(title);
+      this.el?.setAttr("title", title);
+      this.mainEl?.setAttr("aria-label", `Back to the focus window — ${title}`);
+    }
     this.paint();
   }
 
@@ -29,6 +40,7 @@ export class FloatingTimer {
     el.setAttr("role", "group");
     el.setAttr("aria-label", "Focus timer");
     const open = el.createEl("button", { cls: "brewin-float-main" });
+    this.mainEl = open;
     open.setAttr("aria-label", "Back to the focus window");
     open.createSpan({ cls: "brewin-float-icon", text: "⏱" });
     this.clockEl = open.createSpan({ cls: "brewin-float-clock" });
@@ -47,21 +59,18 @@ export class FloatingTimer {
 
   private paint(): void {
     const timer = this.plugin.timer;
-    const run = timer.running;
-    if (!run || !this.el) return;
-    this.clockEl?.setText(clockText(timer.elapsed()));
-    const title = this.plugin.store.getByPath(run.path)?.title ?? run.path.split("/").pop()!.replace(/\.md$/, "");
-    if (this.titleEl && this.titleEl.textContent !== title) {
-      this.titleEl.setText(title);
-      this.el.setAttr("title", title);
-    }
+    if (!timer.running || !this.el) return;
+    // In Pomodoro rounds, what's left of this round or break; otherwise how long it has run.
+    const pom = timer.pomodoro();
+    const ph = pom ? pomodoroPhase(timer.elapsed(), pom) : null;
+    this.clockEl?.setText(ph ? `${ph.kind === "work" ? "🍅" : "☕"} ${clockText(ph.left)}` : clockText(timer.elapsed()));
   }
 
   private remove(): void {
     if (this.tick !== null) window.clearInterval(this.tick);
     this.tick = null;
     this.el?.remove();
-    this.el = this.clockEl = this.titleEl = null;
+    this.el = this.clockEl = this.titleEl = this.mainEl = null;
   }
 
   destroy(): void {

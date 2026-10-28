@@ -32,6 +32,10 @@ export interface DayBrief {
   deadlines: { path: string; name: string; due: string; days: number; overdue: boolean }[];
   /** Focus-timer time per task that day, most first. */
   tracked: { path: string; title: string; minutes: number }[];
+  /** The day's top three (Plan my day), and whether each is done. */
+  top: { path: string; title: string; done: boolean }[];
+  /** Open checkbox tasks in other notes planned for the day (noteTasks.ts), and the line each is on. */
+  notes: { path: string; title: string; line: number }[];
 }
 
 /** How far ahead a project deadline counts as close. */
@@ -45,7 +49,7 @@ export function dayBrief(o: {
   projects: DayProject[];
 }): DayBrief {
   const isToday = o.date === o.today;
-  const schedule = sortItems(o.items.filter((it) => it.kind !== "task" && it.date === o.date));
+  const schedule = sortItems(o.items.filter((it) => it.kind !== "task" && it.kind !== "note" && it.date === o.date));
   const live = o.projects.filter((p) => p.info.status === "active" || p.info.status === "waiting");
 
   const deadlines: DayBrief["deadlines"] = [];
@@ -71,5 +75,10 @@ export function dayBrief(o: {
       : [],
     deadlines,
     tracked: trackedInRange(o.tasks, o.date, o.date),
+    top: o.tasks
+      .filter((t) => t.top === o.date)
+      .map((t) => ({ path: t.path, title: t.title, done: t.status === "done" }))
+      .sort((a, b) => Number(a.done) - Number(b.done) || a.title.localeCompare(b.title)),
+    notes: o.items.filter((it) => it.kind === "note" && it.date === o.date).map((it) => ({ path: it.path, title: it.title, line: it.line ?? 0 })),
   };
 }

@@ -28,6 +28,8 @@ import { RecurrenceScopeModal } from "./recurrenceScopeModal";
 import { toWikilink } from "./task";
 import { ProjectTaskSource } from "./projectTasks";
 import { ProjectSuggestModal } from "./projectSuggestModal";
+import { addChecklistItem, checklistItems, setChecklistItem } from "./checklist";
+import { isSubmitKey } from "./a11y";
 
 /** Create-or-edit a task: title + scheduled/due via date-picker + priority + context + repeat. */
 export class CaptureModal extends Modal {
@@ -35,6 +37,8 @@ export class CaptureModal extends Modal {
   private static moreOpen = false;
   /** Opens a task's focus window — set by the plugin, which owns the timer. */
   static openFocus: ((path: string) => void) | null = null;
+  /** "Skip this time" for a repeating task, with Undo — set by the plugin. */
+  static skip: ((task: Task) => Promise<void>) | null = null;
   /** Saves settings (a new attribute, a new choice) and redraws the Planner — set by the plugin. */
   static saveSettings: (() => Promise<void>) | null = null;
   /** The user's own attributes on this task: current values, and which ones were changed here. */
@@ -72,10 +76,14 @@ export class CaptureModal extends Modal {
   private notes = "";
   /** True once the user has typed in the notes box (guards the async body load). */
   private notesDirty = false;
+  /** The checklist block was asked for, though the notes have no boxes yet. */
+  private checklistAsked = false;
   /** Snapshots used to leave the file untouched when nothing actually changed. */
   private originalTitle = "";
   private originalBody = "";
   private recurrence = "";
+  /** What a repeat's next date counts from (`recurrence_from`). */
+  private recurrenceFrom: "schedule" | "completion" = "schedule";
   private status: Status = "todo";
   /** One of the user's status flags, chosen in the Status dropdown — it sets `status` too. */
   private flag: StatusFlag | null = null;
@@ -106,7 +114,7 @@ export class CaptureModal extends Modal {
     /** Invoked once this window closes — used to hop back to a parent task. */
     private returnTo?: () => void,
     /** Prefills a brand-new task's schedule — ignored when editing an existing one. */
-    preset?: { scheduled: string; startTime?: string },
+    preset?: { scheduled: string; startTime?: string; endTime?: string },
     occurrenceISO?: string
   ) {
     super(app);
@@ -125,6 +133,7 @@ export class CaptureModal extends Modal {
       this.priority = existing.priority;
       this.contexts = [...existing.contexts];
       this.recurrence = existing.recurrence ?? "";
+      this.recurrenceFrom = existing.recurrenceFrom ?? "schedule";
       this.estimate = existing.estimate ?? null;
       const parsedRemind = parseRemindField(existing.remind);
       this.remindMode = parsedRemind.off ? "off" : parsedRemind.minutes != null ? "custom" : "default";
@@ -155,7 +164,7 @@ export class CaptureModal extends Modal {
       if (preset.startTime) {
         this.timed = true;
         this.startTime = preset.startTime;
-        this.endTime = addMinutesHM(preset.startTime, this.settings.defaultTaskMinutes);
+        this.endTime = preset.endTime ?? addMinutesHM(preset.startTime, this.settings.defaultTaskMinutes);
       }
     }
   }
@@ -174,8 +183,9 @@ export class CaptureModal extends Modal {
       placeholder: this.existing ? "What needs doing?" : "e.g. Call bank tomorrow 2pm @home !high",
     });
     titleInput.value = this.title;
+    titleInput.setAttr("aria-label", "Task title");
     titleInput.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter") return;
+      if (!isSubmitKey(e)) return; // not while an IME is still choosing the word
       applyNL(true); // fold the sentence into fields before it's written
       if (this.title.trim()) this.save();
     });
@@ -183,7 +193,8 @@ export class CaptureModal extends Modal {
     // The title box doubles as a command line: "Bins out every monday at 7pm @home ~10m".
     // Nothing is applied silently — the preview below states exactly what was understood,
     // and the fields it fills stay editable, so a wrong guess is visible and correctable.
-    const nlHint = contentEl.createDiv({ cls: "brewin-nl-hint" });
+    // What the title box understood is said as it is typed, not only shown.
+    const nlHint = contentEl.createDiv({ cls: "brewin-nl-hint", attr: { "aria-live": "polite" } });
     const applyNL = (commit: boolean) => {
       // Emptying contentEl during a rerender fires blur on the old input; without this the
       // rerender would re-enter applyNL and loop.
@@ -211,7 +222,10 @@ export class CaptureModal extends Modal {
         this.startTime = parsed.startTime;
         this.endTime = parsed.endTime ?? addMinutesHM(parsed.startTime, this.settings.defaultTaskMinutes);
       }
-      if (parsed.recurrence) this.recurrence = parsed.recurrence;
+      if (parsed.recurrence) {
+        this.recurrence = parsed.recurrence;
+        this.recurrenceFrom = parsed.recurrenceFrom ?? "schedule";
+      }
       if (parsed.priority) this.priority = parsed.priority;
       if (parsed.estimate != null) this.estimate = parsed.estimate;
       if (parsed.contexts.length) {
@@ -226,6 +240,8 @@ export class CaptureModal extends Modal {
       applyNL(false);
     });
     titleInput.addEventListener("blur", () => applyNL(true));
+    // Words given from outside (a link, a selection) say what was understood in them straight away.
+    if (!this.existing && this.title) applyNL(false);
     window.setTimeout(() => titleInput.focus(), 0);
 
     // Date chips
@@ -321,11 +337,11 @@ export class CaptureModal extends Modal {
         })
       );
     const times = timeWrap.createDiv({ cls: "brewin-time-row" });
-    const startIn = times.createEl("input", { type: "time" });
+    const startIn = times.createEl("input", { type: "time", attr: { "aria-label": "Starts at" } });
     startIn.value = this.startTime;
     startIn.addEventListener("input", () => (this.startTime = startIn.value));
-    times.createSpan({ text: " → " });
-    const endIn = times.createEl("input", { type: "time" });
+    times.createSpan({ text: " → ", attr: { "aria-hidden": "true" } });
+    const endIn = times.createEl("input", { type: "time", attr: { "aria-label": "Ends at" } });
     endIn.value = this.endTime;
     endIn.addEventListener("input", () => (this.endTime = endIn.value));
     renderTimes();
@@ -537,6 +553,15 @@ export class CaptureModal extends Modal {
           renderRepeatEnd();
         });
       });
+    // What the next date counts from: the schedule, or the day it was last done.
+    const fromSetting = new Setting(contentEl)
+      .setName("Counted from")
+      .setDesc("“When it's done”: every 3 days after you last did it, however late that was.")
+      .addDropdown((d) => {
+        d.addOption("schedule", "Its schedule");
+        d.addOption("completion", "When it's done");
+        d.setValue(this.recurrenceFrom).onChange((v) => (this.recurrenceFrom = v === "completion" ? "completion" : "schedule"));
+      });
 
     // ── When the repeat stops ──
     // Without this the only way to end a series was to delete the note, which also threw
@@ -552,8 +577,9 @@ export class CaptureModal extends Modal {
     countInput.min = "1";
 
     const renderRepeatEnd = () => {
-      // An end only means something for a series.
+      // An end, and what the dates count from, only mean something for a series.
       endSetting.settingEl.toggleClass("brewin-hidden", !this.recurrence);
+      fromSetting.settingEl.toggleClass("brewin-hidden", !this.recurrence);
       endSel.value = this.repeatEnd;
       untilBtn.toggleClass("brewin-hidden", this.repeatEnd !== "on");
       countInput.toggleClass("brewin-hidden", this.repeatEnd !== "after");
@@ -609,6 +635,7 @@ export class CaptureModal extends Modal {
     const slotInput = contentEl.createEl("input", {
       cls: "brewin-slot-input",
       placeholder: "08:00 Morning — press Enter to add…",
+      attr: { "aria-label": "Add a time of day, like 08:00 Morning" },
     });
     const addSlot = () => {
       const parsed = parseSlot(slotInput.value);
@@ -627,7 +654,7 @@ export class CaptureModal extends Modal {
       renderSlots();
     };
     slotInput.addEventListener("keydown", (e: KeyboardEvent) => {
-      if (e.key !== "Enter") return;
+      if (!isSubmitKey(e)) return;
       e.preventDefault();
       addSlot();
     });
@@ -749,9 +776,10 @@ export class CaptureModal extends Modal {
       type: "text",
       cls: "brewin-subtask-input",
       placeholder: "Add a subtask, press Enter…",
+      attr: { "aria-label": "Add a subtask" },
     });
     subInput.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter") return;
+      if (!isSubmitKey(e)) return;
       e.preventDefault();
       e.stopPropagation(); // don't trigger the modal's save-on-Enter
       const v = subInput.value.trim();
@@ -764,14 +792,66 @@ export class CaptureModal extends Modal {
 
     const advBEnd = contentEl.childElementCount;
 
+    // ── Checklist ──
+    // The boxes in the notes, shown as boxes. Ticking or adding one changes the notes box below,
+    // which stays the one source and is written with Save.
+    const checklist = contentEl.createDiv({ cls: "brewin-checklist" });
     // Notes — the note body (loaded asynchronously when editing)
     const notes = contentEl.createEl("textarea", {
       cls: "brewin-capture-notes",
       placeholder: "Notes (optional)…",
+      attr: { "aria-label": "Notes" },
     });
+    notes.value = this.notes;
+    const setNotes = (text: string) => {
+      this.notes = text;
+      this.notesDirty = true;
+      notes.value = text;
+      renderChecklist();
+    };
+    const renderChecklist = (focusInput = false) => {
+      checklist.empty();
+      const items = checklistItems(this.notes);
+      if (!items.length && !this.checklistAsked) {
+        checklist.createEl("button", { cls: "brewin-chip-mini", text: "☑ Add a checklist" }).addEventListener("click", () => {
+          this.checklistAsked = true;
+          renderChecklist(true);
+        });
+        return;
+      }
+      const done = items.filter((i) => i.done).length;
+      checklist.createDiv({ cls: "brewin-subtasks-label", text: items.length ? `Checklist · ${done}/${items.length}` : "Checklist" });
+      for (const item of items) {
+        const row = checklist.createEl("label", { cls: "brewin-checklist-item" + (item.done ? " done" : "") });
+        const box = row.createEl("input", { type: "checkbox" });
+        box.checked = item.done;
+        box.addEventListener("change", () => {
+          const next = setChecklistItem(this.notes, item, box.checked);
+          if (next !== null) setNotes(next);
+        });
+        row.createSpan({ text: item.text });
+      }
+      const input = checklist.createEl("input", {
+        type: "text",
+        cls: "brewin-subtask-input",
+        placeholder: "Add an item, press Enter…",
+        attr: { "aria-label": "Add a checklist item" },
+      });
+      input.addEventListener("keydown", (e) => {
+        if (!isSubmitKey(e)) return;
+        e.preventDefault();
+        e.stopPropagation(); // don't trigger the modal's save-on-Enter
+        if (!input.value.trim()) return;
+        setNotes(addChecklistItem(this.notes, input.value));
+        checklist.querySelector<HTMLInputElement>("input[type=text]")?.focus();
+      });
+      if (focusInput) input.focus();
+    };
+    renderChecklist();
     notes.addEventListener("input", () => {
       this.notes = notes.value;
       this.notesDirty = true;
+      renderChecklist();
     });
     if (this.existing) {
       void this.store.getBody(this.existing).then((body) => {
@@ -780,6 +860,7 @@ export class CaptureModal extends Modal {
         this.notes = body;
         this.originalBody = body;
         notes.value = body;
+        renderChecklist();
       });
     }
 
@@ -829,6 +910,15 @@ export class CaptureModal extends Modal {
       const focus = btns.createEl("button", { text: "⏱ Focus timer", cls: "brewin-capture-focus" });
       focus.addEventListener("click", () => CaptureModal.openFocus?.(existing.path));
     }
+    // A repeating task's current time let go — not done, not missed — and on to its next date.
+    if (existing?.recurrence && existing.status !== "done" && CaptureModal.skip) {
+      const skip = btns.createEl("button", { text: "⏭ Skip this time" });
+      skip.setAttr("aria-label", "Skip this time — on to its next date, not counted as missed");
+      skip.addEventListener("click", () => {
+        this.close();
+        void CaptureModal.skip?.(existing);
+      });
+    }
     btns.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
     if (this.existing) {
       btns.createEl("button", { text: "Open note" }).addEventListener("click", () => this.openNote());
@@ -850,10 +940,13 @@ export class CaptureModal extends Modal {
   /** The `remind:` / `remind_start:` pair this control represents. */
   /**
    * Start a NEW task inside a project and/or with contexts already on it — what the dashboard
-   * does when you press ＋ while looking at one project or one context. Ignored when editing.
+   * does when you press ＋ while looking at one project or one context — or with its title and
+   * notes written (an editor command, a link from outside Obsidian). Ignored when editing.
    */
-  withPreset(p: { project?: { link: string; name: string } | null; contexts?: string[] }): this {
+  withPreset(p: { project?: { link: string; name: string } | null; contexts?: string[]; title?: string; notes?: string }): this {
     if (this.existing) return this;
+    if (p.title) this.title = p.title;
+    if (p.notes) this.notes = p.notes;
     if (p.project) {
       this.project = p.project.link;
       this.projectTitle = p.project.name;
@@ -1031,6 +1124,7 @@ export class CaptureModal extends Modal {
           project: this.project,
           recurrence,
           recurrenceAnchor: "scheduled" as const,
+          recurrenceFrom: this.recurrenceFrom,
           endDate: this.endDate,
           estimate: this.estimate,
           ...this.remindFields(),
@@ -1106,6 +1200,7 @@ export class CaptureModal extends Modal {
         project: this.project,
         recurrence,
         recurrenceAnchor: "scheduled",
+        recurrenceFrom: this.recurrenceFrom,
         endDate: this.endDate,
         estimate: this.estimate,
         ...this.remindFields(),
@@ -1136,6 +1231,7 @@ export class CaptureModal extends Modal {
         body: this.notes.trim() || undefined,
         recurrence,
         recurrenceAnchor: "scheduled" as const,
+        recurrenceFrom: this.recurrenceFrom,
         parent: this.parent,
         project: this.project,
         endDate: this.endDate,

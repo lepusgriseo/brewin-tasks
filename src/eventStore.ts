@@ -4,6 +4,8 @@ import { convertEndDate, eventFromFrontmatter, eventLastCoveredISO, eventNotePat
 import { addMinutesHM, dayDelta, durationMinutes, shiftISO, todayISO } from "./dates";
 import { setUntil, stripEnd } from "./rrule";
 import { EventItem } from "./types";
+import { yamlString } from "./yaml";
+import { createNote, moveNote, trashNote, writeProperties } from "./undo";
 
 /** What a calendar drop meant. The three targets are not interchangeable. */
 export type DropIntent =
@@ -81,7 +83,8 @@ export class EventStore {
     const path = this.avoidCollision(desired);
     const lines = [
       "---",
-      `title: ${f.title}`,
+      // A title like "Call: dentist" or "Dinner #2" is quoted (see yaml.ts) — bare, it broke the block.
+      `title: ${yamlString(f.title)}`,
       `allDay: ${f.allDay}`,
       `date: ${f.date}`,
     ];
@@ -89,17 +92,18 @@ export class EventStore {
     if (!f.allDay) {
       lines.push(`startTime: ${f.startTime ?? ""}`, `endTime: ${f.endTime ?? ""}`);
     }
-    if (f.recurrence) lines.push(`recurrence: "${f.recurrence}"`);
-    if (f.remind) lines.push(`remind: ${f.remind}`);
+    if (f.recurrence) lines.push(`recurrence: ${JSON.stringify(f.recurrence)}`);
+    if (f.remind) lines.push(`remind: ${yamlString(f.remind)}`);
     if (f.remindStart != null) lines.push(`remind_start: ${f.remindStart}`);
-    if (f.trip) lines.push(`trip: "${f.trip}"`);
-    if (f.location) lines.push(`location: "${f.location.replace(/"/g, '\\"')}"`);
-    if (f.task) lines.push(`task: "${f.task.replace(/"/g, '\\"')}"`);
-    if (f.session) lines.push(`task_session: "${f.session}"`);
+    if (f.trip) lines.push(`trip: ${JSON.stringify(f.trip)}`);
+    // JSON's escaping, not a hand-rolled one: a backslash in an address was an invalid YAML escape.
+    if (f.location) lines.push(`location: ${JSON.stringify(f.location)}`);
+    if (f.task) lines.push(`task: ${JSON.stringify(f.task)}`);
+    if (f.session) lines.push(`task_session: ${JSON.stringify(f.session)}`);
     // Left empty for the Properties panel: link the people who were there, e.g. [[Ada Fernsby]].
     lines.push("with: ", "completed: null", `modified: ${todayISO()}`, "---", "", `# ${f.title}`, "");
     if (f.body?.trim()) lines.push(f.body.trim(), "");
-    return this.app.vault.create(path, lines.join("\n"));
+    return createNote(this.app, path, lines.join("\n"));
   }
 
   /** The calendar event a focus session was filed as, found by its `time_log` line and its task. */
@@ -121,7 +125,7 @@ export class EventStore {
   async setRecurrence(ev: EventItem, rrule: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(ev.path);
     if (!(file instanceof TFile)) return;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       fm.recurrence = rrule;
       fm.modified = todayISO();
     });
@@ -131,7 +135,7 @@ export class EventStore {
   async addExdate(ev: EventItem, iso: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(ev.path);
     if (!(file instanceof TFile)) return;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       const cur: string[] = Array.isArray(fm.recurrence_exdates) ? fm.recurrence_exdates.map(String) : [];
       if (!cur.includes(iso)) cur.push(iso);
       fm.recurrence_exdates = cur.sort();
@@ -184,7 +188,7 @@ export class EventStore {
   async update(ev: EventItem, f: NewEventFields): Promise<string> {
     const file = this.app.vault.getAbstractFileByPath(ev.path);
     if (!(file instanceof TFile)) return ev.path;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       fm.title = f.title;
       fm.allDay = f.allDay;
       fm.date = f.date;
@@ -229,7 +233,7 @@ export class EventStore {
     await this.ensureFolder(dir); // the category folder may not exist yet
     const dest = this.avoidCollision(desired);
     try {
-      await this.app.fileManager.renameFile(file, dest);
+      await moveNote(this.app, file, dest);
       return dest;
     } catch {
       return ev.path; // couldn't move — the frontmatter edit still stands
@@ -252,11 +256,21 @@ export class EventStore {
    * `if (newStart)` branch and rewrite nothing but the date, so the event stayed timed
    * while the UI claimed it had moved.
    */
+  /** Move when a timed event ends, the same day — its bottom edge dragged on the calendar. */
+  async setEnd(ev: EventItem, endTime: string): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(ev.path);
+    if (!(file instanceof TFile)) return;
+    await writeProperties(this.app, file, (fm) => {
+      fm.endTime = endTime;
+      fm.modified = todayISO();
+    });
+  }
+
   async reschedule(ev: EventItem, newDate: string, intent: DropIntent): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(ev.path);
     if (!(file instanceof TFile)) return;
     const oldStart = ev.date;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       fm.date = newDate;
 
       // Carry any multi-day span along with the move first, in its ORIGINAL convention.
@@ -287,7 +301,7 @@ export class EventStore {
   async toggleComplete(ev: EventItem): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(ev.path);
     if (!(file instanceof TFile)) return;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       fm.completed = ev.completed ? null : todayISO();
       fm.modified = todayISO();
     });
@@ -299,7 +313,7 @@ export class EventStore {
    */
   async deleteEvent(ev: EventItem): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(ev.path);
-    if (file instanceof TFile) await this.app.fileManager.trashFile(file);
+    if (file instanceof TFile) await trashNote(this.app, file);
   }
 
   /**
@@ -343,7 +357,7 @@ export class EventStore {
       const dest = this.avoidCollision(normalizePath(`${this.settings.eventsArchiveFolder}/${rel}`));
       await this.ensureParent(dest);
       try {
-        await this.app.fileManager.renameFile(file, dest);
+        await moveNote(this.app, file, dest);
         moved++;
       } catch {
         /* skip files that can't be moved */

@@ -144,3 +144,58 @@ export function parseManualSession(text: string, dayISO: string, endMs: number):
   if (!minutes || minutes > 24 * 60) return null;
   return [endMs - minutes * 60_000, endMs];
 }
+
+// ── Pomodoro ──────────────────────────────────────────────────────────────────────────────────
+// Work, a short break, work… and a long break every few rounds. Which phase a session is in is
+// worked out from how long its clock has run, so it survives Obsidian closing and agrees across
+// devices; nothing about it is stored. Only the work is logged.
+
+export interface PomodoroSettings {
+  /** Minutes. */
+  work: number;
+  short: number;
+  long: number;
+  /** Rounds of work before the long break. */
+  every: number;
+}
+
+export interface PomodoroPhase {
+  kind: "work" | "short" | "long";
+  /** Which round of work this is, or follows — from 1. */
+  round: number;
+  /** Where the phase starts and ends, in ms since the clock started; and how long is left. */
+  from: number;
+  to: number;
+  left: number;
+}
+
+/** The phase a session is in `elapsed` ms after its clock started. */
+export function pomodoroPhase(elapsed: number, p: PomodoroSettings): PomodoroPhase {
+  const min = 60_000;
+  const work = Math.max(1, p.work) * min;
+  const short = Math.max(0, p.short) * min;
+  const long = Math.max(0, p.long) * min;
+  const every = Math.max(1, Math.floor(p.every));
+  const cycle = every * work + (every - 1) * short + long;
+  const at = Math.max(0, elapsed);
+  const n = Math.floor(at / cycle);
+  let t = n * cycle;
+  for (let r = 1; ; r++) {
+    if (at < t + work) return { kind: "work", round: n * every + r, from: t, to: t + work, left: t + work - at };
+    t += work;
+    const rest = r === every ? long : short;
+    if (at < t + rest) return { kind: r === every ? "long" : "short", round: n * every + r, from: t, to: t + rest, left: t + rest - at };
+    t += rest;
+  }
+}
+
+/** The work in a session from `start` to `end` (epoch ms), as [start, end] stretches — what is logged. */
+export function workStretches(start: number, end: number, p: PomodoroSettings): [number, number][] {
+  const out: [number, number][] = [];
+  for (let at = 0; at < end - start; ) {
+    const phase = pomodoroPhase(at, p);
+    if (phase.kind === "work") out.push([start + at, start + Math.min(phase.to, end - start)]);
+    at = phase.to;
+  }
+  return out;
+}

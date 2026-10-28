@@ -1,9 +1,11 @@
 import { App, normalizePath, TFile, TFolder } from "obsidian";
 import { BrewinSettings } from "./settings";
 import { applyTaskToFrontmatter, parentLinkpath, sanitizeFilename, taskFromFrontmatter, TASK_TAG, toWikilink } from "./task";
+import { yamlString } from "./yaml";
+import { createNote, moveNote, trashNote, writeProperties, writeText } from "./undo";
 import { buildIndex, childrenOf, openChildren, wouldCreateCycle } from "./hierarchy";
 import { openDependencies } from "./dependencies";
-import { completeRecurringOccurrence, currentOccurrenceISO, shiftAnchor, skipRecurringOccurrence } from "./recurrence";
+import { completeRecurringOccurrence, currentOccurrenceISO, shiftAnchor, skipRecurringOccurrence, skipThisTime } from "./recurrence";
 import { addMinutesHM, dayDelta, shiftISO, todayISO } from "./dates";
 import { setUntil, stripEnd } from "./rrule";
 import { formatSlot, nextOpenSlot, pruneSlotLog, slotProgress, withSlotToggled } from "./slots";
@@ -12,6 +14,7 @@ import type { EditScope } from "./recurrenceScopeModal";
 import { Priority, Status, Task, TaskSlot } from "./types";
 import { flagRefusal, flagToWrite, StatusFlag } from "./statusFlags";
 import { attrToFrontmatter, AttrValue } from "./attributes";
+import { ChecklistItem, checklistItems, setChecklistItem } from "./checklist";
 
 export interface NewTaskFields {
   title: string;
@@ -23,6 +26,8 @@ export interface NewTaskFields {
   contexts: string[];
   recurrence?: string | null;
   recurrenceAnchor?: "scheduled" | "due";
+  /** "completion": the next date counts from the day it's done. */
+  recurrenceFrom?: "schedule" | "completion";
   body?: string;
   /** Wikilink to a parent task, e.g. `[[Ship v2]]`. */
   parent?: string | null;
@@ -59,11 +64,62 @@ export interface CompleteResult {
 }
 
 /** Reads and mutates the task-note collection. All file I/O lives here. */
+/** A task's fields as a new task would take them — for an occurrence moved onto a note of its own. */
+export function fieldsOf(task: Task, scheduled: string): NewTaskFields {
+  return {
+    title: task.title,
+    scheduled,
+    startTime: task.startTime,
+    endTime: task.endTime,
+    due: task.due,
+    priority: task.priority,
+    contexts: task.contexts,
+    parent: task.parent,
+    recurrence: task.recurrence,
+    recurrenceAnchor: task.recurrenceAnchor,
+    recurrenceFrom: task.recurrenceFrom,
+    endDate: task.endDate,
+    estimate: task.estimate,
+    remind: task.remind,
+    remindStart: task.remindStart,
+    times: task.times,
+    dependsOn: task.dependsOn,
+  };
+}
+
 export class TaskStore {
   constructor(private app: App, private settings: BrewinSettings) {}
 
-  /** All task notes under the Items + Routines folders (identified by the `task` tag). */
+  /** The tasks as last read, and by path — rebuilt only after a change (see `invalidate`). */
+  private index: { list: Task[]; byPath: Map<string, Task> } | null = null;
+
+  /**
+   * Forget what was read, so the next read builds the list afresh. The plugin calls this on every
+   * metadata, create, delete and rename event that could change a task. Building it means reading all
+   * 9,000-odd notes, and the views asked for it several times per redraw (the Review page once a row).
+   */
+  invalidate(): void {
+    this.index = null;
+  }
+
+  /**
+   * All task notes under the Items + Routines folders (identified by the `task` tag). A new array each
+   * time; the tasks in it are shared with every other caller, so they are never changed in place.
+   */
   getTasks(): Task[] {
+    return [...this.read().list];
+  }
+
+  private read(): { list: Task[]; byPath: Map<string, Task> } {
+    if (!this.index) {
+      const list = this.scan();
+      this.index = { list, byPath: new Map(list.map((t) => [t.path, t])) };
+    }
+    return this.index;
+  }
+
+  /** Read every task note from the metadata cache — what `getTasks` used to do on every call. */
+  private scan(): Task[] {
     const folders = [this.settings.itemsFolder, this.settings.routinesFolder];
     const out: Task[] = [];
     for (const file of this.app.vault.getMarkdownFiles()) {
@@ -76,6 +132,9 @@ export class TaskStore {
       task.parentPath = this.resolveParentPath(task.parent, file.path);
       task.dependsOnPaths = this.resolveLinkPaths(task.dependsOn, file.path);
       task.projectPath = this.resolveParentPath(task.project, file.path);
+      // The checklist in its body (its `- [ ]` lines), counted from the metadata cache — no read.
+      const boxes = cache?.listItems?.filter((li) => li.task !== undefined) ?? [];
+      task.checklist = boxes.length ? { done: boxes.filter((li) => li.task !== " ").length, total: boxes.length } : null;
       out.push(task);
     }
     return out;
@@ -140,7 +199,8 @@ export class TaskStore {
 
     const fm: string[] = [
       "---",
-      `up: "[[${this.settings.hubNote}]]"`,
+      // Free text is quoted where YAML would misread it (see yaml.ts); links and rules always are.
+      `up: ${JSON.stringify(`[[${this.settings.hubNote}]]`)}`,
       "tags:",
       `  - ${TASK_TAG}`,
       "status: todo",
@@ -151,33 +211,34 @@ export class TaskStore {
       `due: ${fields.due ?? ""}`,
       `priority: ${fields.priority}`,
       ...(fields.estimate ? [`estimate: ${fields.estimate}`] : []),
-      ...(fields.remind ? [`remind: ${fields.remind}`] : []),
+      ...(fields.remind ? [`remind: ${yamlString(fields.remind)}`] : []),
       ...(fields.remindStart != null ? [`remind_start: ${fields.remindStart}`] : []),
-      `contexts: [${fields.contexts.join(", ")}]`,
+      `contexts: [${fields.contexts.map((c) => yamlString(c, { flow: true })).join(", ")}]`,
     ];
-    if (fields.month) fm.push(`month: ${fields.month}`);
-    if (fields.week) fm.push(`week: ${fields.week}`);
-    if (fields.parent) fm.push(`parent: "${fields.parent}"`);
-    if (fields.project) fm.push(`project: "${fields.project}"`);
+    if (fields.month) fm.push(`month: ${yamlString(fields.month)}`);
+    if (fields.week) fm.push(`week: ${yamlString(fields.week)}`);
+    if (fields.parent) fm.push(`parent: ${JSON.stringify(fields.parent)}`);
+    if (fields.project) fm.push(`project: ${JSON.stringify(fields.project)}`);
     if (fields.dependsOn?.length) {
       fm.push("depends_on:");
-      for (const link of fields.dependsOn) fm.push(`  - "${link}"`);
+      for (const link of fields.dependsOn) fm.push(`  - ${JSON.stringify(link)}`);
     }
     if (recurring) {
-      fm.push(`recurrence: "${fields.recurrence}"`);
+      fm.push(`recurrence: ${JSON.stringify(fields.recurrence)}`);
       fm.push(`recurrence_anchor: ${fields.recurrenceAnchor ?? "scheduled"}`);
+      if (fields.recurrenceFrom === "completion") fm.push("recurrence_from: completion");
       fm.push("complete_instances: []");
       fm.push("on_completion: keep");
     }
     if (fields.times?.length) {
       fm.push("times:");
-      for (const s of fields.times) fm.push(`  - "${formatSlot(s)}"`);
+      for (const s of fields.times) fm.push(`  - ${JSON.stringify(formatSlot(s))}`);
       fm.push("complete_slots: {}");
     }
     fm.push(`created: ${today}`, "completed:", `modified: ${today}`, "---", "");
 
     const body = `# ${fields.title}\n${fields.body ? "\n" + fields.body + "\n" : ""}`;
-    return this.app.vault.create(path, fm.join("\n") + "\n" + body);
+    return createNote(this.app, path, fm.join("\n") + "\n" + body);
   }
 
   /**
@@ -228,7 +289,7 @@ export class TaskStore {
     const link = parent ? toWikilink(parent.path.split("/").pop()?.replace(/\.md$/, "") ?? parent.title) : null;
     const file = this.fileFor(task);
     if (!file) return false;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       if (link) fm.parent = link;
       else delete fm.parent;
       fm.modified = todayISO();
@@ -244,7 +305,7 @@ export class TaskStore {
     const file = this.fileFor(task);
     if (!file) return;
     const link = projectPath ? toWikilink(projectPath.split("/").pop()?.replace(/\.md$/, "") ?? projectPath) : null;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       if (link) fm.project = link;
       else delete fm.project;
       fm.modified = todayISO();
@@ -269,7 +330,7 @@ export class TaskStore {
   }
 
   getByPath(path: string): Task | null {
-    return this.getTasks().find((t) => t.path === path) ?? null;
+    return this.read().byPath.get(path) ?? null;
   }
 
   /**
@@ -294,14 +355,14 @@ export class TaskStore {
     const oldBase = file.basename;
     const kids = childrenOf(this.getIndexedTasks().index, task);
     const dest = this.uniquePath(folder, safe);
-    await this.app.fileManager.renameFile(file, dest);
+    await moveNote(this.app, file, dest);
     const newBase = dest.split("/").pop()!.replace(/\.md$/, "");
 
     // Safety net: ensure children point at the new name.
     for (const kid of kids) {
       const kf = this.app.vault.getAbstractFileByPath(kid.path);
       if (!(kf instanceof TFile)) continue;
-      await this.app.fileManager.processFrontMatter(kf, (fm) => {
+      await writeProperties(this.app, kf, (fm) => {
         if (parentLinkpath(fm.parent ? String(fm.parent) : null) === oldBase) {
           fm.parent = toWikilink(newBase);
         }
@@ -311,7 +372,7 @@ export class TaskStore {
     // The filename is now the title — drop any stale `title:` override.
     const moved = this.app.vault.getAbstractFileByPath(dest);
     if (moved instanceof TFile) {
-      await this.app.fileManager.processFrontMatter(moved, (fm) => {
+      await writeProperties(this.app, moved, (fm) => {
         delete fm.title;
         fm.modified = todayISO();
       });
@@ -339,7 +400,7 @@ export class TaskStore {
       for (const kid of kids) {
         const kf = this.app.vault.getAbstractFileByPath(kid.path);
         if (!(kf instanceof TFile)) continue;
-        await this.app.fileManager.processFrontMatter(kf, (fm) => {
+        await writeProperties(this.app, kf, (fm) => {
           delete fm.parent;
           fm.modified = todayISO();
         });
@@ -348,7 +409,7 @@ export class TaskStore {
 
     const file = this.fileFor(task);
     if (file) {
-      await this.app.fileManager.trashFile(file);
+      await trashNote(this.app, file);
       removed++;
     }
     return removed;
@@ -368,16 +429,36 @@ export class TaskStore {
    * `# Heading` is preserved verbatim unless `retitleTo` is given (i.e. the user actually
    * renamed the task) — so opening a task and saving it unchanged is a true no-op.
    */
+  /** The checklist in a task note's body, as the note now reads (not the cache: it follows a tick). */
+  async checklist(task: Task): Promise<ChecklistItem[]> {
+    const file = this.fileFor(task);
+    return file ? checklistItems(await this.app.vault.read(file)) : [];
+  }
+
+  /** Tick or untick one checklist item in place. False when its line has changed since it was read. */
+  async tickChecklist(task: Task, item: ChecklistItem, done: boolean): Promise<boolean> {
+    const file = this.fileFor(task);
+    if (!file) return false;
+    let ok = false;
+    await writeText(this.app, file, (text) => {
+      const next = setChecklistItem(text, item, done);
+      ok = next !== null;
+      return next ?? text;
+    });
+    return ok;
+  }
+
   async setBody(task: Task, body: string, retitleTo?: string): Promise<void> {
     const file = this.fileFor(task);
     if (!file) return;
-    const text = await this.app.vault.read(file);
-    const fm = /^---\n[\s\S]*?\n---\n?/.exec(text)?.[0] ?? "";
-    const afterFm = text.slice(fm.length);
-    const existingHeading = /^\s*#\s+[^\n]*\n?/.exec(afterFm)?.[0].replace(/^\s+/, "");
-    const heading = retitleTo !== undefined ? `# ${retitleTo}\n` : existingHeading ?? `# ${task.title}\n`;
-    const next = `${fm}\n${heading}${body.trim() ? "\n" + body.trim() + "\n" : ""}`;
-    if (next !== text) await this.app.vault.modify(file, next);
+    // One atomic read-and-write, so nothing written to the note in between is lost.
+    await writeText(this.app, file, (text) => {
+      const fm = /^---\n[\s\S]*?\n---\n?/.exec(text)?.[0] ?? "";
+      const afterFm = text.slice(fm.length);
+      const existingHeading = /^\s*#\s+[^\n]*\n?/.exec(afterFm)?.[0].replace(/^\s+/, "");
+      const heading = retitleTo !== undefined ? `# ${retitleTo}\n` : existingHeading ?? `# ${task.title}\n`;
+      return `${fm}\n${heading}${body.trim() ? "\n" + body.trim() + "\n" : ""}`;
+    });
   }
 
   private fileFor(task: Task): TFile | null {
@@ -388,7 +469,7 @@ export class TaskStore {
   async persist(task: Task): Promise<void> {
     const file = this.fileFor(task);
     if (!file) return;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       applyTaskToFrontmatter(fm, task);
       fm.modified = todayISO();
     });
@@ -433,7 +514,7 @@ export class TaskStore {
     task: Task,
     // NOTE: no `title` — a task is renamed by renaming its file (see `rename`).
     f: Partial<
-      Pick<Task, "scheduled" | "startTime" | "endTime" | "due" | "priority" | "status" | "flag" | "contexts" | "recurrence" | "recurrenceAnchor" | "parent" | "times" | "endDate" | "estimate" | "remind" | "remindStart" | "dependsOn" | "month" | "week" | "project">
+      Pick<Task, "scheduled" | "startTime" | "endTime" | "due" | "priority" | "status" | "flag" | "contexts" | "recurrence" | "recurrenceAnchor" | "recurrenceFrom" | "parent" | "times" | "endDate" | "estimate" | "remind" | "remindStart" | "dependsOn" | "month" | "week" | "project">
     >
     /** @returns the task's path, which changes if the edit moved the note. */
   ): Promise<string> {
@@ -442,8 +523,8 @@ export class TaskStore {
     // Defensive: never let an edit set `done` while subtasks are open (the modal checks
     // first and warns; this keeps the invariant true even if a caller forgets).
     const status = f.status === "done" && !this.checkComplete(task).ok ? undefined : f.status;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
-      if (f.scheduled !== undefined) fm.scheduled = f.scheduled ?? "";
+    await writeProperties(this.app, file, (fm) => {
+      if (f.scheduled !== undefined) fm.scheduled = f.scheduled ?? null;
       if (f.startTime !== undefined) {
         if (f.startTime) fm.startTime = f.startTime;
         else delete fm.startTime;
@@ -456,7 +537,7 @@ export class TaskStore {
         if (f.endDate) fm.endDate = f.endDate;
         else delete fm.endDate;
       }
-      if (f.due !== undefined) fm.due = f.due ?? "";
+      if (f.due !== undefined) fm.due = f.due ?? null;
       if (f.priority !== undefined) fm.priority = f.priority;
       if (f.estimate !== undefined) {
         if (f.estimate) fm.estimate = f.estimate;
@@ -508,7 +589,12 @@ export class TaskStore {
           fm.recurrence_anchor = f.recurrenceAnchor ?? "scheduled";
         } else {
           delete fm.recurrence;
+          delete fm.recurrence_from;
         }
+      }
+      if (f.recurrenceFrom !== undefined && (f.recurrence ?? task.recurrence)) {
+        if (f.recurrenceFrom === "completion") fm.recurrence_from = "completion";
+        else delete fm.recurrence_from;
       }
       if (f.times !== undefined) {
         if (f.times.length) {
@@ -545,7 +631,7 @@ export class TaskStore {
     await this.ensureFolder(target);
     const dest = this.uniquePath(target, file.basename);
     try {
-      await this.app.fileManager.renameFile(file, dest);
+      await moveNote(this.app, file, dest);
       return dest;
     } catch {
       return task.path;
@@ -555,7 +641,7 @@ export class TaskStore {
   async setRecurrence(task: Task, rrule: string): Promise<void> {
     const file = this.fileFor(task);
     if (!file) return;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       fm.recurrence = rrule;
       fm.modified = todayISO();
     });
@@ -565,7 +651,7 @@ export class TaskStore {
   async addExdate(task: Task, iso: string): Promise<void> {
     const file = this.fileFor(task);
     if (!file) return;
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       const cur: string[] = Array.isArray(fm.recurrence_exdates) ? fm.recurrence_exdates.map(String) : [];
       if (!cur.includes(iso)) cur.push(iso);
       fm.recurrence_exdates = cur.sort();
@@ -603,6 +689,7 @@ export class TaskStore {
         project: f.project ?? null,
         recurrence: f.recurrence ?? original.recurrence,
         recurrenceAnchor: f.recurrenceAnchor,
+        recurrenceFrom: f.recurrenceFrom,
         endDate: f.endDate ?? null,
         estimate: f.estimate ?? null,
         remind: f.remind ?? null,
@@ -616,7 +703,10 @@ export class TaskStore {
       await this.addExdate(original, occurrenceISO);
       const currentAnchor = original.recurrenceAnchor === "due" ? original.due : original.scheduled;
       if (currentAnchor === occurrenceISO) {
-        const res = skipRecurringOccurrence(original, occurrenceISO, todayISO());
+        // The exception just written goes into what is persisted, or that write would drop it again
+        // (and the reviews would count the moved occurrence as missed).
+        const withExdate = { ...original, exdates: [...new Set([...original.exdates, occurrenceISO])].sort() };
+        const res = skipRecurringOccurrence(withExdate, occurrenceISO, todayISO());
         await this.persist(res.task);
         if (res.ended && res.archive) await this.archiveNote(res.task);
       }
@@ -633,6 +723,23 @@ export class TaskStore {
     await this.setRecurrence(original, setUntil(original.recurrence ?? "", untilISO));
     await this.createTask({ ...f, recurrence: stripEnd(f.recurrence || original.recurrence || "") });
     return original.path;
+  }
+
+  /**
+   * "Skip this time": a repeating task's current occurrence let go, and on to its next — see
+   * `skipThisTime`. The next date, or null when that was the series' last.
+   */
+  async skipOccurrence(task: Task): Promise<string | null> {
+    if (!task.recurrence) return null;
+    const res = skipThisTime(task, currentOccurrenceISO(task) ?? todayISO(), todayISO());
+    await this.persist(res.task);
+    if (res.ended && res.archive) await this.archiveNote(res.task);
+    return res.ended ? null : currentOccurrenceISO(res.task);
+  }
+
+  /** Star a task as one of `day`'s top three (or take the star off, with null). */
+  async setTop(task: Task, day: string | null): Promise<void> {
+    await this.persist({ ...task, top: day });
   }
 
   async setDue(task: Task, iso: string | null): Promise<void> {
@@ -678,7 +785,7 @@ export class TaskStore {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile) || !Object.keys(values).length) return;
     const defs = new Map(this.settings.attributes.map((a) => [a.key, a]));
-    await this.app.fileManager.processFrontMatter(file, (fm) => {
+    await writeProperties(this.app, file, (fm) => {
       for (const [key, v] of Object.entries(values)) {
         const attr = defs.get(key);
         if (!attr) continue;
@@ -919,7 +1026,7 @@ export class TaskStore {
     if (!file) return;
     await this.ensureFolder(this.settings.doneFolder);
     const dest = this.uniquePath(this.settings.doneFolder, task.title);
-    await this.app.fileManager.renameFile(file, dest);
+    await moveNote(this.app, file, dest);
   }
 
   /** File the given tasks into the Done folder. Returns how many moved. */
@@ -956,7 +1063,8 @@ function withStatus(task: Task, status: Status, flag: StatusFlag | null = null):
   return { ...task, status, flag, scheduled: null, startTime: null, endTime: null, endDate: null };
 }
 
-function collectTags(fm: Record<string, unknown>, cache: ReturnType<App["metadataCache"]["getFileCache"]>): string[] {
+/** A note's tags, from its frontmatter and its body, without the `#`. */
+export function collectTags(fm: Record<string, unknown>, cache: ReturnType<App["metadataCache"]["getFileCache"]>): string[] {
   const tags = new Set<string>();
   const fmTags = fm.tags;
   if (Array.isArray(fmTags)) fmTags.forEach((t) => tags.add(String(t).replace(/^#/, "")));

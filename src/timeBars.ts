@@ -89,3 +89,32 @@ export function renderWeekTrend(parent: HTMLElement, weeks: WeekTotal[]): void {
     col.createDiv({ cls: "brewin-trend-label", text: w.weekStart.slice(5) }); // MM-DD
   }
 }
+
+/** Labelled horizontal bars for the insight tabs: each row's name, its figure, and a bar against the largest. */
+export function renderValueBars(parent: HTMLElement, rows: { label: string; value: number; text: string; aria?: string }[]): void {
+  const max = Math.max(...rows.map((r) => r.value), 1);
+  for (const r of rows) {
+    const row = parent.createDiv({ cls: "brewin-tb-row" });
+    row.setAttr("aria-label", r.aria ?? `${r.label}: ${r.text}`);
+    const head = row.createDiv({ cls: "brewin-tb-head" });
+    head.createSpan({ cls: "brewin-tb-cat", text: r.label });
+    head.createSpan({ cls: "brewin-tb-val", text: r.text });
+    const fill = row.createDiv({ cls: "brewin-tb-track" }).createDiv({ cls: "brewin-tb-fill" });
+    fill.style.width = `${Math.max(2, (r.value / max) * 100)}%`;
+    fill.style.background = "var(--interactive-accent)";
+  }
+}
+
+/** A strip of columns — one per day or week — labelled underneath, each named for a screen reader. */
+export function renderColumns(parent: HTMLElement, cols: { label: string; value: number; aria: string }[]): void {
+  const max = Math.max(...cols.map((c) => c.value), 1);
+  const strip = parent.createDiv({ cls: "brewin-trend" });
+  for (const c of cols) {
+    const col = strip.createDiv({ cls: "brewin-trend-col" });
+    col.setAttr("aria-label", c.aria);
+    const bar = col.createDiv({ cls: "brewin-trend-bar" });
+    bar.style.height = `${c.value === 0 ? 2 : Math.max(4, (c.value / max) * 100)}%`;
+    if (c.value === 0) bar.addClass("empty");
+    col.createDiv({ cls: "brewin-trend-label", text: c.label });
+  }
+}

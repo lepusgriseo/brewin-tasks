@@ -1,4 +1,5 @@
 import { App, Modal } from "obsidian";
+import { isSubmitKey } from "./a11y";
 import { ProjectTask } from "./projectTasks";
 import { matchStep, plainText, ProjectInfo, promoteCandidates } from "./projects";
 
@@ -63,9 +64,10 @@ export class NextActionModal extends Modal {
 
     const input = contentEl.createEl("input", { type: "text", cls: "brewin-capture-title" });
     input.placeholder = "Or type the next action";
+    input.setAttr("aria-label", "The next action");
     input.addEventListener("input", () => (this.typed = input.value));
     input.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter") return;
+      if (!isSubmitKey(e)) return;
       e.preventDefault();
       if (this.typed.trim()) this.submit(null, this.typed.trim());
     });

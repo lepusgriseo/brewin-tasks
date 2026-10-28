@@ -83,7 +83,8 @@ export class EventModal extends Modal {
     private onCreated: () => void,
     presetDateOrExisting?: string | EventItem,
     occurrenceISO?: string,
-    presetStartTime?: string
+    presetStartTime?: string,
+    presetEndTime?: string
   ) {
     super(app);
     if (presetDateOrExisting && typeof presetDateOrExisting === "object") {
@@ -132,7 +133,7 @@ export class EventModal extends Modal {
       if (presetStartTime) {
         this.allDay = false;
         this.startTime = presetStartTime;
-        this.endTime = addMinutesHM(presetStartTime, 60);
+        this.endTime = presetEndTime ?? addMinutesHM(presetStartTime, 60);
       } else {
         // Most events are timed — 176 of 241 in this vault — so a new one starts timed: at the
         // next round hour today, or 09:00 on another day. All-day is one toggle away.
@@ -226,12 +227,12 @@ export class EventModal extends Modal {
     contentEl.createEl("h3", { text: this.existing ? "Edit event" : "New event" });
     this.renderTemplatePicker(contentEl);
 
-    const titleInput = contentEl.createEl("input", { type: "text", cls: "brewin-capture-title", placeholder: "Event title" });
+    const titleInput = contentEl.createEl("input", { type: "text", cls: "brewin-capture-title", placeholder: "Event title", attr: { "aria-label": "Event title" } });
     titleInput.value = this.title;
 
     // Same one-line parser as task capture: "Dentist 12 aug at 2pm for 45m".
     // The preview shows what was understood; fields stay editable afterwards.
-    const nlHint = contentEl.createDiv({ cls: "brewin-nl-hint" });
+    const nlHint = contentEl.createDiv({ cls: "brewin-nl-hint", attr: { "aria-live": "polite" } });
     const applyNL = (commit: boolean) => {
       if (this.rerendering) return;
       const parsed = parseCapture(titleInput.value);
@@ -301,11 +302,11 @@ export class EventModal extends Modal {
     // Time inputs (timed events), plus an optional end DAY so a block can cross midnight.
     const timeWrap = contentEl.createDiv();
     const times = timeWrap.createDiv({ cls: "brewin-time-row" });
-    const start = times.createEl("input", { type: "time" });
+    const start = times.createEl("input", { type: "time", attr: { "aria-label": "Starts at" } });
     start.value = this.startTime;
     start.addEventListener("input", () => (this.startTime = start.value));
-    times.createSpan({ text: " → " });
-    const end = times.createEl("input", { type: "time" });
+    times.createSpan({ text: " → ", attr: { "aria-hidden": "true" } });
+    const end = times.createEl("input", { type: "time", attr: { "aria-label": "Ends at" } });
     end.value = this.endTime;
     end.addEventListener("input", () => (this.endTime = end.value));
 
@@ -749,6 +750,7 @@ export class EventModal extends Modal {
       title: "Delete event",
       body: `"${ev.title}" will be moved to your vault's trash — recoverable via Obsidian's "Deleted files" setting.`,
       cta: "Delete",
+      danger: true,
       onConfirm: async () => {
         await this.store.deleteEvent(ev);
         done(`Deleted "${ev.title}".`);

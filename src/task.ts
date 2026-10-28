@@ -109,6 +109,7 @@ export function taskFromFrontmatter(
     contexts: asStringList(fm.contexts),
     recurrence: fm.recurrence ? String(fm.recurrence) : null,
     recurrenceAnchor: asAnchor(fm.recurrence_anchor),
+    recurrenceFrom: fm.recurrence_from === "completion" ? "completion" : "schedule",
     completeInstances: asISOList(fm.complete_instances),
     exdates: asISOList(fm.recurrence_exdates),
     times: parseSlots(fm.times),
@@ -124,6 +125,7 @@ export function taskFromFrontmatter(
     projectPath: null, // resolved by the store (needs the metadata cache)
     month: fm.month ? String(fm.month).trim() || null : null,
     week: fm.week ? String(fm.week).trim() || null : null,
+    top: coerceISO(fm.top),
   };
 }
 
@@ -146,11 +148,28 @@ export function toWikilink(basename: string): string {
  * is left, so callers can decide on a fallback.
  */
 export function sanitizeFilename(title: string): string {
-  return title
+  let name = title
     .replace(/[\\/:*?"<>|#^[\]]/g, "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u001f\u007f]/g, "")
     .replace(/\s+/g, " ")
-    .trim();
+    .trim()
+    // A name starting with a dot is a hidden file, which Obsidian never indexes: the task would vanish.
+    .replace(/^[.\s]+/, "");
+  // Longer names fail to save once the vault's own path is added (255 bytes on most file systems,
+  // 260 characters of path on Windows). The note's heading keeps the whole title.
+  const chars = [...name];
+  if (chars.length > MAX_NAME_CHARS) {
+    const cut = chars.slice(0, MAX_NAME_CHARS).join("");
+    const space = cut.lastIndexOf(" ");
+    name = (space > MAX_NAME_CHARS * 0.6 ? cut.slice(0, space) : cut).trim();
+  }
+  // Windows keeps these names for devices, with any extension, so `Con.md` can't be made there.
+  return /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i.test(name) ? `${name}_` : name;
 }
+
+/** The longest note name a task title becomes, in characters. */
+export const MAX_NAME_CHARS = 150;
 
 /** Mutate a frontmatter record in place to reflect a Task (used inside processFrontMatter). */
 export function applyTaskToFrontmatter(fm: Record<string, unknown>, task: Task): void {
@@ -163,14 +182,15 @@ export function applyTaskToFrontmatter(fm: Record<string, unknown>, task: Task):
   const flag = flagToWrite(task.flag, task.status);
   if (flag) fm.flag = flag;
   else delete fm.flag;
-  fm.scheduled = task.scheduled ?? "";
+  // No date is an empty property, not empty text: Bases and the Properties panel read it as "no date".
+  fm.scheduled = task.scheduled ?? null;
   if (task.endDate) fm.endDate = task.endDate;
   else delete fm.endDate;
   if (task.startTime) fm.startTime = task.startTime;
   else delete fm.startTime;
   if (task.endTime) fm.endTime = task.endTime;
   else delete fm.endTime;
-  fm.due = task.due ?? "";
+  fm.due = task.due ?? null;
   fm.priority = task.priority;
   if (task.estimate) fm.estimate = task.estimate;
   else delete fm.estimate;
@@ -186,13 +206,16 @@ export function applyTaskToFrontmatter(fm: Record<string, unknown>, task: Task):
     fm.on_completion = task.onCompletion;
     if (task.exdates?.length) fm.recurrence_exdates = task.exdates;
     else delete fm.recurrence_exdates;
+    if (task.recurrenceFrom === "completion") fm.recurrence_from = "completion";
+    else delete fm.recurrence_from;
   }
   // Multi-slot repeats. Both keys are dropped when empty so ordinary tasks stay clean.
   if (task.times?.length) fm.times = task.times.map(formatSlot);
   else delete fm.times;
   if (Object.keys(task.completeSlots ?? {}).length) fm.complete_slots = task.completeSlots;
   else delete fm.complete_slots;
-  if (task.completed) fm.completed = task.completed;
+  // Reopening clears it — left behind, a Base's "done this week" would count a task that isn't.
+  fm.completed = task.completed ?? null;
 
   if (task.parent) fm.parent = task.parent;
   else delete fm.parent;
@@ -205,6 +228,10 @@ export function applyTaskToFrontmatter(fm: Record<string, unknown>, task: Task):
 
   if (task.week) fm.week = task.week;
   else delete fm.week;
+
+  // Written only while starred, so an ordinary note never grows the property.
+  if (task.top) fm.top = task.top;
+  else delete fm.top;
 }
 
 export function isRecurring(task: Task): boolean {

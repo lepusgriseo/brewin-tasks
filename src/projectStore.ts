@@ -1,4 +1,5 @@
 import { App, TFile } from "obsidian";
+import { writeText } from "./undo";
 import { BrewinSettings } from "./settings";
 import { ProjectTask, ProjectTaskSource } from "./projectTasks";
 import { todayISO } from "./dates";
@@ -59,7 +60,7 @@ export class ProjectStore {
   advance(p: ProjectInfo, o: { done: boolean; tick: ProjectTask | null; promote: ProjectTask | null; next: string }): Promise<ProjectInfo | null> {
     return this.write(p, { next: o.next }, (text) => {
       const lines = text.split("\n");
-      if (o.tick) tickStep(lines, o.tick.line, o.tick.raw);
+      if (o.tick) tickStep(lines, o.tick.line, o.tick.raw, todayISO());
       if (o.promote) untagStep(lines, o.promote.line, o.promote.raw);
       const out = lines.join("\n");
       return o.done && p.next ? withLogEntry(out, todayISO(), `Done: ${p.next}`) : out;
@@ -70,7 +71,7 @@ export class ProjectStore {
     const file = this.app.vault.getAbstractFileByPath(p.path);
     if (!(file instanceof TFile)) return null;
     const after = applyPatch(p, patch);
-    await this.app.vault.process(file, (text) => {
+    await writeText(this.app, file, (text) => {
       // Kept before the write lands, so the cache's change event for it always comes after.
       this.written.set(p.path, after);
       return withProjectFields(body(text), { ...patch, modified: todayISO() });

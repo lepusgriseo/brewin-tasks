@@ -5,6 +5,7 @@ import { doneTimesOn } from "./slots";
 import { taskDayIndex, taskLastDay, taskSpanDays } from "./task";
 import { effectiveStart, occurrencesInRange, parseRRule } from "./rrule";
 import { CalendarItem, CalendarKind, EventItem, Task } from "./types";
+import { plainText } from "./projects";
 
 function daysInRange(fromISO: string, toISO: string): string[] {
   const from = parseISO(fromISO);
@@ -200,7 +201,8 @@ export function projectTasksToItems(tasks: ProjectTaskLike[], fromISO: string, t
     out.push({
       kind: "project",
       path: t.projectPath,
-      title: t.text || "(untitled task)",
+      // Plain, as the dashboard shows the step: `**bold**` and `[[links]]` read as text on a calendar chip.
+      title: plainText(t.text) || "(untitled task)",
       date: day,
       allDay: true,
       start: null,
@@ -219,7 +221,7 @@ export function projectTasksToItems(tasks: ProjectTaskLike[], fromISO: string, t
  * people first, then your own work. Project tasks sit just after tasks, since that's what
  * they are — surfaced from a project note rather than standing on their own.
  */
-const KIND_RANK: Record<CalendarKind, number> = { birthday: 0, event: 0, training: 0, task: 1, project: 2 };
+const KIND_RANK: Record<CalendarKind, number> = { birthday: 0, event: 0, training: 0, external: 0, task: 1, project: 2, note: 2 };
 
 /**
  * Sort items within a day: outstanding work first and anything already completed last

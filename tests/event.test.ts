@@ -310,3 +310,13 @@ test("eventLastCoveredISO agrees with the conversion in both directions", () => 
   const allDay = ev({ date: "2026-08-03", endDate: asAllDayEnd, allDay: true });
   assert.equal(eventLastCoveredISO(timed), eventLastCoveredISO(allDay));
 });
+
+test("projectTasksToItems: a step's Markdown is shown as plain text, as on the dashboard", () => {
+  const [item] = projectTasksToItems(
+    [{ projectPath: "P/Work.md", projectName: "Work", line: 4, text: "**Q1 test:** call [[Ada Fernsby|Ada]] about `invoices`", scheduled: "2026-10-27", due: null }],
+    "2026-10-01",
+    "2026-10-31",
+    "Projects"
+  );
+  assert.equal(item.title, "Q1 test: call Ada about invoices");
+});

@@ -5,10 +5,11 @@
 
 import { Notice, TFile } from "obsidian";
 import type BrewinTasksPlugin from "./main";
-import { formatSession, formatStarted, parseTimeLog, sessionMinutes, totalMinutes } from "./timeTrack";
+import { formatSession, formatStarted, parseTimeLog, PomodoroSettings, sessionMinutes, totalMinutes, workStretches } from "./timeTrack";
 import { todayISO } from "./dates";
 import { toWikilink } from "./task";
 import { Task } from "./types";
+import { completionRefusal } from "./status";
 
 /** Long enough for our own write to reach the metadata cache before the cache is trusted again. */
 const OWN_WRITE_MS = 3000;
@@ -87,21 +88,28 @@ export class TaskTimer {
     });
   }
 
-  /** Stop the clock and log the session. Returns the minutes logged — 0 for a few seconds. */
+  /** The Pomodoro rounds, when the clock runs in them. */
+  pomodoro(): PomodoroSettings | null {
+    const s = this.plugin.settings;
+    return s.pomodoro ? { work: s.pomodoroWork, short: s.pomodoroShort, long: s.pomodoroLong, every: s.pomodoroEvery } : null;
+  }
+
+  /** Stop the clock and log the session — in Pomodoro rounds, each stretch of work. Returns the minutes logged. */
   async pause(): Promise<number> {
     const run = this.run;
     if (!run) return 0;
     this.run = null;
     this.changed();
     const end = Date.now();
-    const minutes = sessionMinutes(run.start, end);
-    const line = minutes ? formatSession(run.start, end) : null;
+    const pom = this.pomodoro();
+    const stretches = (pom ? workStretches(run.start, end, pom) : [[run.start, end]]).filter(([s, e]) => sessionMinutes(s, e) > 0);
+    const lines = stretches.map(([s, e]) => formatSession(s, e));
     await this.write(run.path, (fm) => {
       delete fm.timer_started;
-      if (line) appendSession(fm, line);
+      for (const line of lines) appendSession(fm, line);
     });
-    if (line) await this.fileSession(run.path, run.start, end, line);
-    return minutes;
+    for (let i = 0; i < lines.length; i++) await this.fileSession(run.path, stretches[i][0], stretches[i][1], lines[i]);
+    return stretches.reduce((n, [s, e]) => n + sessionMinutes(s, e), 0);
   }
 
   /** Stop the clock if it's on this task, then tick the task done. Returns why not, if it can't be. */
@@ -110,9 +118,7 @@ export class TaskTimer {
     const fresh = this.plugin.store.getByPath(task.path) ?? task;
     const res = await this.plugin.store.complete(fresh);
     if (res.ok) return null;
-    return [res.open ? `${res.open} subtask${res.open === 1 ? "" : "s"} still open` : "", res.blocked ? `waiting on ${res.blocked} other task${res.blocked === 1 ? "" : "s"}` : ""]
-      .filter(Boolean)
-      .join(" and ");
+    return completionRefusal(res);
   }
 
   /** Log time worked without the clock — typed in the focus window. */

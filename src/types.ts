@@ -61,6 +61,9 @@ export interface Task {
   /** iCal RRULE string (optionally with a DTSTART prefix), or null for one-offs. */
   recurrence: string | null;
   recurrenceAnchor: RecurrenceAnchor;
+  /** What the next date counts from: the schedule (every Monday), or the day it was done ("every 3
+   *  days after it's done" — `recurrence_from: completion`). Absent means the schedule. */
+  recurrenceFrom?: "schedule" | "completion";
   /** For recurring tasks: ISO dates of completed occurrences. */
   completeInstances: string[];
   /** ISO occurrence dates to skip — a single occurrence detached onto its own note. */
@@ -102,6 +105,10 @@ export interface Task {
    * task is dragged onto a real day or time slot. Null for an ordinary task.
    */
   week: string | null;
+  /** The day this task was starred as one of that day's top three (`top:`), or null. */
+  top?: string | null;
+  /** The checklist in the task note's body (its `- [ ]` lines): how many are ticked, of how many. */
+  checklist?: { done: number; total: number } | null;
 }
 
 export interface EventItem {
@@ -140,7 +147,7 @@ export interface EventItem {
  * owned by the Fitness plugin — never dragged, edited or ticked here. `birthday` items come from the
  * people notes' `DOB::` lines, and likewise only open their note.
  */
-export type CalendarKind = "task" | "event" | "project" | "training" | "birthday";
+export type CalendarKind = "task" | "event" | "project" | "training" | "birthday" | "note" | "external";
 
 /** A normalised item placed on the unified calendar. */
 export interface CalendarItem {
@@ -165,6 +172,8 @@ export interface CalendarItem {
   location?: string | null;
   /** Training items only — the Fitness routine, and the session already logged for it, if any. */
   training?: { routine: string; sessionPath: string | null; rest: boolean };
+  /** Items from another calendar (icsService.ts): which, its colour, and what its event says. */
+  external?: { calendarId: string; color: string; description: string; unsupported: boolean };
 }
 
 export type Bucket =

@@ -5,6 +5,7 @@
 // rules, so the Planner and the HQ note can never disagree about which projects are stalled.
 
 import { coerceISO } from "./dates";
+import { displayText, writeInlineTask } from "./inlineTask";
 
 export type ProjectStatus = "active" | "waiting" | "someday" | "done";
 export const PROJECT_STATUSES: ProjectStatus[] = ["active", "waiting", "someday", "done"];
@@ -33,6 +34,8 @@ export interface ProjectInfo {
   next: string;
   waitingOn: string;
   due: string | null;
+  /** The day it began (`started:`), for the timeline. */
+  started: string | null;
   completed: string | null;
 }
 
@@ -48,6 +51,7 @@ export function projectFromFrontmatter(path: string, name: string, fm: Record<st
     next: text(fm?.next),
     waitingOn: text(fm?.waiting_on),
     due: coerceISO(fm?.due),
+    started: coerceISO(fm?.started),
     completed: coerceISO(fm?.completed),
   };
 }
@@ -81,12 +85,7 @@ export function deadlineLabel(d: { days: number }): string {
 
 /** A checkbox line read as an action: inline fields, `#next` and HTML comments taken out. */
 export function stepText(body: string): string {
-  return body
-    .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/\[[\w ]+::[^\]]*\]/g, "")
-    .replace(/(^|\s)#next\b/g, "$1")
-    .replace(/\s+/g, " ")
-    .trim();
+  return displayText(body); // one reading of a step's words, shared with inlineTask.ts
 }
 
 /**
@@ -220,10 +219,11 @@ export function withProjectFields(text: string, patch: ProjectPatch): string {
 }
 
 /** Tick the open checkbox on `line`, if it still says `raw` (or find `raw` if the note moved). */
-export function tickStep(lines: string[], line: number, raw: string): boolean {
+export function tickStep(lines: string[], line: number, raw: string, doneISO?: string): boolean {
   const at = lines[line] === raw ? line : lines.indexOf(raw);
   if (at < 0 || !/- \[ \]/.test(lines[at])) return false;
-  lines[at] = lines[at].replace(/- \[ \]/, "- [x]");
+  // With a date, the tick records it as the line writes dates — `[completion:: …]` or ✅.
+  lines[at] = doneISO ? writeInlineTask(lines[at], { done: true }, doneISO) : lines[at].replace(/- \[ \]/, "- [x]");
   return true;
 }
 

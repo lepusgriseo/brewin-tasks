@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { nextOccurrenceISO, parseRRule, firstOnOrAfter, effectiveStart, setUntil, stripEnd } from "../src/rrule.ts";
+import { nextOccurrenceISO, occurrencesInRange, parseRRule, firstOnOrAfter, effectiveStart, setUntil, stripEnd } from "../src/rrule.ts";
 import { parseISO, formatISO } from "../src/dates.ts";
 
 // ── The three REAL routines from the vault ──────────────────────────────────
@@ -92,4 +92,12 @@ test("parse handles DTSTART= and no-DTSTART forms", () => {
   assert.ok(parseRRule("DTSTART=2026-07-26;FREQ=MONTHLY;BYDAY=-1SU"));
   assert.equal(parseRRule("nonsense"), null);
   assert.equal(parseRRule(""), null);
+});
+
+test("occurrencesInRange stops after COUNT, counting from the series' start", () => {
+  const rule = parseRRule("FREQ=WEEKLY;BYDAY=MO;COUNT=3")!;
+  const start = new Date(Date.UTC(2026, 9, 5)); // Mon 5 Oct: 5, 12, 19 Oct and no more
+  const iso = (ds: Date[]) => ds.map((d) => d.toISOString().slice(0, 10));
+  assert.deepEqual(iso(occurrencesInRange(rule, start, new Date(Date.UTC(2026, 9, 10)), new Date(Date.UTC(2026, 10, 30)))), ["2026-10-12", "2026-10-19"]);
+  assert.deepEqual(iso(occurrencesInRange(rule, start, new Date(Date.UTC(2026, 9, 20)), new Date(Date.UTC(2026, 10, 30)))), []);
 });

@@ -28,6 +28,8 @@ export interface ParsedCapture {
   /** Hard deadline — set by "by <date>". */
   due: string | null;
   recurrence: string | null;
+  /** "every 3 days after done" or "every! 3 days": the next date counts from completion. */
+  recurrenceFrom: "completion" | null;
   priority: Priority | null;
   contexts: string[];
   estimate: number | null;
@@ -98,6 +100,7 @@ export function parseCapture(input: string, now: Date = new Date()): ParsedCaptu
     endTime: null,
     due: null,
     recurrence: null,
+    recurrenceFrom: null,
     priority: null,
     contexts: [],
     estimate: null,
@@ -157,22 +160,28 @@ export function parseCapture(input: string, now: Date = new Date()): ParsedCaptu
   });
 
   // ── Recurrence — before dates, so "every monday" isn't eaten as a plain weekday ──
-  scan(/\bevery\s+(day|weekday|weekdays|week|month|year)\b/gi, (m) => {
-    const unit = m[1].toLowerCase();
+  // "every! 3 days" or "every 3 days after done": counted from when it's done, not from the schedule.
+  const AFTER_DONE = String.raw`(\s+(?:after|when)\s+(?:it'?s\s+|it\s+is\s+)?(?:done|completed?|finished))?`;
+  const fromDone = (bang: string | undefined, after: string | undefined) => {
+    out.recurrenceFrom = bang || after ? "completion" : null;
+    return out.recurrenceFrom ? ", counted from when it's done" : "";
+  };
+  scan(new RegExp(String.raw`\bevery(!?)\s+(day|weekday|weekdays|week|month|year)\b` + AFTER_DONE, "gi"), (m) => {
+    const unit = m[2].toLowerCase();
     out.recurrence =
       unit === "day" ? "FREQ=DAILY"
       : unit.startsWith("weekday") ? "FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR"
       : unit === "week" ? "FREQ=WEEKLY"
       : unit === "month" ? "FREQ=MONTHLY"
       : "FREQ=YEARLY";
-    return `repeats ${m[0].toLowerCase()}`;
+    return `repeats every ${unit}${fromDone(m[1], m[3])}`;
   });
-  scan(/\bevery\s+(\d+)\s+(day|days|week|weeks|month|months)\b/gi, (m) => {
-    const n = Number(m[1]);
-    const unit = m[2].toLowerCase().replace(/s$/, "");
+  scan(new RegExp(String.raw`\bevery(!?)\s+(\d+)\s+(day|days|week|weeks|month|months)\b` + AFTER_DONE, "gi"), (m) => {
+    const n = Number(m[2]);
+    const unit = m[3].toLowerCase().replace(/s$/, "");
     const freq = unit === "day" ? "DAILY" : unit === "week" ? "WEEKLY" : "MONTHLY";
     out.recurrence = `FREQ=${freq};INTERVAL=${n}`;
-    return `repeats ${m[0].toLowerCase()}`;
+    return `repeats every ${n} ${m[3].toLowerCase()}${fromDone(m[1], m[4])}`;
   });
   // "every monday", "every mon and thu", "every tue, thu"
   scan(

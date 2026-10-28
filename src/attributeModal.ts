@@ -9,12 +9,13 @@
 
 import { App, Modal, Notice, Setting, TFile } from "obsidian";
 import { ATTR_KINDS, AttrKind, findProperty, inferKind, PropertyUse, scanProperties, TaskAttribute, uniqueAttrKey } from "./attributes";
+import { isSubmitKey } from "./a11y";
 
 /** Obsidian's type for a property name, where one is assigned. Not in the public API; read defensively. */
 function obsidianType(app: App, name: string): string | null {
   try {
-    const mgr = (app as unknown as { metadataTypeManager?: { getAssignedType?(n: string): string | null | undefined } }).metadataTypeManager;
-    return mgr?.getAssignedType?.(name) ?? null;
+    const mgr = (app as unknown as { metadataTypeManager?: { getAssignedWidget?(n: string): string | null | undefined } }).metadataTypeManager;
+    return mgr?.getAssignedWidget?.(name) ?? null;
   } catch {
     return null;
   }
@@ -74,13 +75,14 @@ export class AttributeModal extends Modal {
       t.setPlaceholder("Cost, Client, Room…").setValue(this.initialLabel).onChange((v) => this.setLabel(v));
       window.setTimeout(() => t.inputEl.focus(), 0);
       t.inputEl.addEventListener("keydown", (e) => {
-        if (e.key === "Enter") {
+        if (isSubmitKey(e)) {
           e.preventDefault();
           this.submit();
         }
       });
     });
-    this.foundEl = contentEl.createDiv({ cls: "brewin-attr-found" });
+    // What's found is said as the name is typed.
+    this.foundEl = contentEl.createDiv({ cls: "brewin-attr-found", attr: { "aria-live": "polite" } });
 
     this.kindSetting = new Setting(contentEl).setName("Kind");
     this.kindSetting.addDropdown((d) => {

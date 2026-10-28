@@ -12,13 +12,14 @@ import { isRecurring, taskCoversDay, taskDayIndex, taskLastDay, taskSpanDays } f
 import { CalendarItem, CalendarKind, Task } from "./types";
 import { isActive, isCarried } from "./status";
 
-export type DashView = "today" | "week" | "inbox" | "projects" | "attention" | "review" | "all" | "birthdays";
+export type DashView = "today" | "week" | "inbox" | "projects" | "goals" | "attention" | "review" | "all" | "birthdays";
 
 export const DASH_VIEWS: { id: DashView; label: string; icon: string }[] = [
   { id: "today", label: "Today", icon: "📅" },
   { id: "week", label: "Week", icon: "🗓" },
   { id: "inbox", label: "Inbox", icon: "📥" },
   { id: "projects", label: "Projects", icon: "⚡" },
+  { id: "goals", label: "Goals", icon: "🎯" },
   { id: "attention", label: "Attention", icon: "🔴" },
   { id: "review", label: "Review", icon: "📋" },
   { id: "all", label: "All", icon: "☰" },
@@ -402,6 +403,16 @@ export function weekTaskReview(
     if (isRecurring(t) && from && to) {
       const rule = parseRRule(t.recurrence);
       if (!rule) continue;
+      if (t.recurrenceFrom === "completion") {
+        // Counted from the day it was last done, it has no fixed dates to miss — only the one it's on now.
+        const doneDates = t.completeInstances.filter((d) => d >= fromISO && d <= toISO);
+        const now = t.recurrenceAnchor === "due" ? t.due : t.scheduled;
+        const nowIn = !!now && now >= fromISO && now <= toISO && !t.exdates?.includes(now) && !t.completeInstances.includes(now);
+        if (doneDates.length) doneRecurring.push({ task: t, dates: doneDates });
+        if (nowIn && now < todayISO) missedRecurring.push({ task: t, dates: [now] });
+        else if (nowIn) stillOpen.push(t);
+        continue;
+      }
       // A recurring task's scheduled/due rolls forward every time an occurrence is completed,
       // so its live anchor can sit *after* the week under review — seeding `occurrencesInRange`
       // from it would skip the occurrences actually completed earlier in the week. Seed from
@@ -782,8 +793,13 @@ export function expandRecurringTasks(
     if (!rule) continue;
     const anchor = parseISO(t.scheduled ?? t.due ?? fromISO);
     const start = effectiveStart(rule, anchor, from);
+    // Counted from completion, only its next date is known: the ones after it wait on when it's done.
+    const occurrences =
+      t.recurrenceFrom === "completion"
+        ? [parseISO(t.recurrenceAnchor === "due" ? t.due : t.scheduled)].filter((d): d is Date => !!d && d >= from && d <= to)
+        : occurrencesInRange(rule, start, from, to);
 
-    for (const occ of occurrencesInRange(rule, start, from, to)) {
+    for (const occ of occurrences) {
       const date = formatISO(occ);
       if (t.exdates?.includes(date)) continue; // detached onto its own note — skip it here
       const slots = t.times ?? [];

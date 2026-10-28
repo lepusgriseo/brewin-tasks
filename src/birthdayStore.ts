@@ -1,4 +1,5 @@
 import { App, TAbstractFile, TFile } from "obsidian";
+import { writeText } from "./undo";
 import { BrewinSettings } from "./settings";
 import { Person, personFromNote, withDob } from "./birthdays";
 
@@ -50,7 +51,7 @@ export class BirthdayStore {
   async setDob(person: Person, value: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(person.path);
     if (!(file instanceof TFile)) return;
-    const text = await this.app.vault.process(file, (t) => withDob(t, value));
+    const text = await writeText(this.app, file, (t) => withDob(t, value));
     const p = personFromNote(file.path, file.basename, text);
     if (p) this.people.set(file.path, p);
   }

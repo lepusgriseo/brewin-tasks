@@ -1,4 +1,4 @@
-import { App, Notice, PluginSettingTab, Setting } from "obsidian";
+import { App, Notice, PluginSettingTab, Setting, TextComponent, TFolder } from "obsidian";
 import type { CalView } from "./calendar";
 import type { SavedFilter } from "./dashMenu";
 import { BUILTIN_STATUSES, FLAG_SUGGESTIONS, flagText, moveFlag, StatusFlag, uniqueFlagId } from "./statusFlags";
@@ -8,6 +8,37 @@ import type { Status } from "./types";
 import { ATTR_KINDS, TaskAttribute } from "./attributes";
 import { AttributeModal } from "./attributeModal";
 import type BrewinTasksPlugin from "./main";
+import { cleanFolder, matchFolderCase } from "./paths";
+
+/** The settings that are folders — tidied on load and as they're typed (see paths.ts). */
+export const FOLDER_KEYS = [
+  "itemsFolder",
+  "routinesFolder",
+  "doneFolder",
+  "projectsFolder",
+  "eventsFolder",
+  "eventsArchiveFolder",
+  "tripsFolder",
+  "templatesFolder",
+  "peopleFolder",
+  "accountabilityFolder",
+  "dayNotesFolder",
+  "goalsFolder",
+] as const;
+export type FolderKey = (typeof FOLDER_KEYS)[number];
+
+/** Another calendar the Planner shows (an .ics subscription). Its address is kept per device, not here. */
+export interface IcsCalendar {
+  id: string;
+  name: string;
+  color: string;
+  /** Its timed events take up time: Today's free time, auto-schedule, Plan my day. */
+  busy: boolean;
+  show: boolean;
+}
+
+/** What a calendar is called until its first fetch gives its own name. */
+export const NEW_CALENDAR_NAME = "New calendar";
 
 export interface Category {
   name: string;
@@ -19,6 +50,8 @@ export interface BrewinSettings {
   routinesFolder: string;
   doneFolder: string;
   projectsFolder: string;
+  /** Goal notes (tagged #goal) — the 🎯 Goals view, with the projects that name each in `goal:`. */
+  goalsFolder: string;
   eventsFolder: string;
   eventsArchiveFolder: string;
   /** Scanned by the event modal's "Link trip…" picker. */
@@ -138,6 +171,12 @@ export interface BrewinSettings {
   timerConfirmLeave: boolean;
   /** While a clock runs and its window is shut, a small timer floats over the workspace. */
   timerFloating: boolean;
+  /** 1.69: the clock runs in Pomodoro rounds — work, a short break, and a long one every few rounds. */
+  pomodoro: boolean;
+  pomodoroWork: number;
+  pomodoroShort: number;
+  pomodoroLong: number;
+  pomodoroEvery: number;
 
   // ── 1.59: attributes of the user's own ─────────────────────────────────────
   /** Made from the task window; one frontmatter property each — see `attributes.ts`. */
@@ -145,11 +184,37 @@ export interface BrewinSettings {
 
   // ── 1.60: a board for every view ────────────────────────────────────────────
   /** List or board, per view (`today`, `week`, `inbox`, `attention`, `all`, `projects`). */
-  layouts: Record<string, "list" | "board">;
+  /** Each view's list or board — and for Projects, a timeline. */
+  layouts: Record<string, "list" | "board" | "timeline">;
   /** What a view's board columns are (`BoardField`), per view. */
   boardBy: Record<string, string>;
   /** Today's ✅ Completed section is open. */
   todayDoneOpen: boolean;
+
+  // ── 1.65: planning the day ──────────────────────────────────────────────────
+  /** Show the "To plan" panel beside the Day, 3-day and Week calendars. */
+  showPlanPanel: boolean;
+  /** Whether that panel is open. */
+  planPanelOpen: boolean;
+  /** "HH:MM" — a notice offering Shut down; blank for none. */
+  shutdownTime: string;
+  /** Where the day notes are (`YYYY-MM-DD.md`) — Shut down opens today's. */
+  dayNotesFolder: string;
+
+  // ── 1.66: tasks from the rest of the vault ───────────────────────────────────
+  /** Every open checkbox in a day note is a task on that day. */
+  noteTasksDayNotes: boolean;
+  /** Elsewhere, an open checkbox with a date (or #task) is a task. */
+  noteTasksDated: boolean;
+  /** Folders whose checkboxes are never read as tasks (beside the Planner's own and the templates). */
+  noteTaskExclude: string[];
+
+  // ── 1.68: other calendars ────────────────────────────────────────────────────
+  icsCalendars: IcsCalendar[];
+
+  // ── 1.62: task notes Bases can read ─────────────────────────────────────────
+  /** Which round of property types has been set (`propertyTypes.ts`); 0 = never. */
+  propertyTypesVersion: number;
 
   // ── 1.53: birthdays, from the people notes ─────────────────────────────────
   /** Where the people notes are; each one's `DOB::` line is its birthday. */
@@ -167,6 +232,7 @@ export const DEFAULT_SETTINGS: BrewinSettings = {
   routinesFolder: "00_Systems/Tasks/Routines",
   doneFolder: "00_Systems/Tasks/Items/Done",
   projectsFolder: "03_Projects",
+  goalsFolder: "00_Systems/Imperium Centrum/Goals",
   eventsFolder: "00_Systems/Calendar/Events",
   eventsArchiveFolder: "00_Systems/Calendar/Events/Archived",
   tripsFolder: "04_Areas/Leisure/Trips",
@@ -219,12 +285,26 @@ export const DEFAULT_SETTINGS: BrewinSettings = {
   statusFlags: [],
   timerToCalendar: true,
   timerCategory: "Focus",
+  pomodoro: false,
+  pomodoroWork: 25,
+  pomodoroShort: 5,
+  pomodoroLong: 15,
+  pomodoroEvery: 4,
   timerConfirmLeave: true,
   timerFloating: true,
   attributes: [],
   layouts: {},
   boardBy: {},
   todayDoneOpen: false,
+  propertyTypesVersion: 0,
+  showPlanPanel: true,
+  planPanelOpen: true,
+  shutdownTime: "",
+  dayNotesFolder: "00_Systems/Calendar/Periodic/Days",
+  noteTasksDayNotes: true,
+  noteTasksDated: true,
+  noteTaskExclude: ["_Template", "_Archive"],
+  icsCalendars: [],
   peopleFolder: "04_Areas/People",
   birthdaysOnCalendar: true,
   birthdayReminders: true,
@@ -242,6 +322,12 @@ export const DEFAULT_SETTINGS: BrewinSettings = {
   digestIncludeCrossPlugin: true,
   dashboardDefaultToAttentionWhenBehind: true,
 };
+
+/** A number box: a phone shows its number pad for it, not the full keyboard. */
+function numeric(t: TextComponent, mode: "numeric" | "decimal" = "numeric"): TextComponent {
+  t.inputEl.inputMode = mode;
+  return t;
+}
 
 /** The category label used for the leftover slice in the time breakdown. */
 export const UNALLOCATED = "Unallocated";
@@ -269,12 +355,23 @@ export class BrewinSettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  /**
+   * A typed folder as the Planner keeps it: tidied as Obsidian spells paths, with the existing
+   * folder's own capitals when only they differ, and the default when the box is emptied.
+   */
+  private folderValue(key: FolderKey, typed: string): string {
+    const clean = cleanFolder(typed);
+    if (!clean) return DEFAULT_SETTINGS[key];
+    const folders = this.app.vault.getAllLoadedFiles().filter((f): f is TFolder => f instanceof TFolder).map((f) => f.path);
+    return matchFolderCase(clean, folders);
+  }
+
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Brewin Planner" });
 
-    const folder = (name: string, desc: string, key: keyof BrewinSettings) =>
+    const folder = (name: string, desc: string, key: FolderKey) =>
       new Setting(containerEl)
         .setName(name)
         .setDesc(desc)
@@ -282,7 +379,7 @@ export class BrewinSettingTab extends PluginSettingTab {
           t
             .setValue(String(this.plugin.settings[key]))
             .onChange(async (v) => {
-              (this.plugin.settings[key] as unknown as string) = v.trim();
+              this.plugin.settings[key] = this.folderValue(key, v);
               await this.plugin.saveSettings();
             })
         );
@@ -291,6 +388,7 @@ export class BrewinSettingTab extends PluginSettingTab {
     folder("Recurring tasks folder", "Where recurring task notes live.", "routinesFolder");
     folder("Done folder", "Where 'Archive done' moves completed one-offs.", "doneFolder");
     folder("Projects folder", "Scanned for #project notes to surface their tasks.", "projectsFolder");
+    folder("Goals folder", "Goal notes (tagged #goal, with a target_date) — the 🎯 Goals view shows each with the projects that name it in goal:.", "goalsFolder");
     folder("Events folder", "Where calendar event notes live.", "eventsFolder");
     folder("Events archive folder", "Where 'Archive past events' moves past events. Keep it inside the Events folder to keep them visible on the calendar (greyed).", "eventsArchiveFolder");
     folder("Trips folder", "Scanned by the event modal's 'Link trip…' picker.", "tripsFolder");
@@ -448,7 +546,7 @@ export class BrewinSettingTab extends PluginSettingTab {
       .setDesc("Each note here is a person; the date in its DOB:: line is their birthday. Add Birthday:: hidden to a note to leave someone out.")
       .addText((t) =>
         t.setValue(this.plugin.settings.peopleFolder).onChange(async (v) => {
-          this.plugin.settings.peopleFolder = v.trim().replace(/\/$/, "");
+          this.plugin.settings.peopleFolder = this.folderValue("peopleFolder", v);
           await this.plugin.saveSettings();
           await this.plugin.birthdays.loadAll();
           this.plugin.refreshViews();
@@ -477,7 +575,7 @@ export class BrewinSettingTab extends PluginSettingTab {
       .setName("Days of warning")
       .setDesc("How many days before a birthday to mention it, to get a card or present in time. 0 is on the day only.")
       .addText((t) =>
-        t.setValue(String(this.plugin.settings.birthdayRemindDays)).onChange(async (v) => {
+        numeric(t).setValue(String(this.plugin.settings.birthdayRemindDays)).onChange(async (v) => {
           const n = Number(v);
           this.plugin.settings.birthdayRemindDays = Number.isFinite(n) && n >= 0 && n <= 60 ? Math.round(n) : 7;
           this.plugin.reminders?.markStale();
@@ -509,7 +607,7 @@ export class BrewinSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Session length (minutes)")
       .addText((tx) =>
-        tx.setValue(String(this.plugin.settings.trainingMinutes)).onChange(async (v) => {
+        numeric(tx).setValue(String(this.plugin.settings.trainingMinutes)).onChange(async (v) => {
           const n = Number(v);
           if (Number.isFinite(n) && n >= 10 && n <= 300) {
             this.plugin.settings.trainingMinutes = Math.round(n);
@@ -519,12 +617,62 @@ export class BrewinSettingTab extends PluginSettingTab {
         })
       );
 
+    containerEl.createEl("h3", { text: "Planning the day" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Plan my day and Shut down are commands, buttons in Today, and buttons on the morning summary and the shut-down notice (Reminders).",
+    });
+    new Setting(containerEl)
+      .setName("“To plan” panel on the calendar")
+      .setDesc("Beside the Day, 3-day and Week views: today's top three, what has no time yet, what's overdue and the inbox — drag any of them onto the clock.")
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.showPlanPanel).onChange(async (v) => {
+          this.plugin.settings.showPlanPanel = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshViews();
+        })
+      );
+    folder("Day notes folder", "Where the day notes (YYYY-MM-DD) are — Shut down opens today's.", "dayNotesFolder");
+
+    this.otherCalendars(containerEl);
+
+    containerEl.createEl("h3", { text: "Tasks in your notes" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Checkbox lines in other notes show beside your task notes — in Today, Week, Needs attention, All, the review and the calendar — " +
+        "and are ticked, dated and changed in place on their lines. Task notes, projects and templates are never read this way.",
+    });
+    const noteToggle = (name: string, desc: string, key: "noteTasksDayNotes" | "noteTasksDated") =>
+      new Setting(containerEl)
+        .setName(name)
+        .setDesc(desc)
+        .addToggle((t) =>
+          t.setValue(this.plugin.settings[key]).onChange(async (v) => {
+            this.plugin.settings[key] = v;
+            await this.plugin.saveSettings();
+            this.plugin.refreshViews();
+          })
+        );
+    noteToggle("Every open box in a day note", "A to-do jotted in a day note is a task on that day, unless its line gives another date.", "noteTasksDayNotes");
+    noteToggle("Dated or #task boxes in any other note", "A box with a date (📅 2026-11-02, [due:: 2026-11-02]…) or tagged #task. Other boxes stay plain checklists.", "noteTasksDated");
+    new Setting(containerEl)
+      .setName("Leave these folders out")
+      .setDesc("One folder per line. Their checkboxes are never read as tasks.")
+      .addTextArea((ta) => {
+        ta.inputEl.rows = 3;
+        ta.setValue(this.plugin.settings.noteTaskExclude.join("\n")).onChange(async (v) => {
+          this.plugin.settings.noteTaskExclude = v.split("\n").map((f) => cleanFolder(f)).filter(Boolean);
+          await this.plugin.saveSettings();
+        });
+      });
+
     containerEl.createEl("h3", { text: "Housekeeping" });
     new Setting(containerEl)
       .setName("File done tasks after (days)")
       .setDesc("Completed tasks move to the Done folder this many days after they were ticked, so the Items folder holds only live work. 0 turns it off.")
       .addText((tx) =>
-        tx.setValue(String(this.plugin.settings.autoArchiveDoneDays)).onChange(async (v) => {
+        numeric(tx).setValue(String(this.plugin.settings.autoArchiveDoneDays)).onChange(async (v) => {
           const n = Number(v);
           if (Number.isFinite(n) && n >= 0 && n <= 365) {
             this.plugin.settings.autoArchiveDoneDays = Math.round(n);
@@ -563,7 +711,7 @@ export class BrewinSettingTab extends PluginSettingTab {
       .setName("Remind me before")
       .setDesc("Minutes of warning. Override per item with `remind: 30m`, or silence one with `remind: none`.")
       .addText((t) =>
-        t.setValue(String(this.plugin.settings.reminderLeadMinutes)).onChange(async (v) => {
+        numeric(t).setValue(String(this.plugin.settings.reminderLeadMinutes)).onChange(async (v) => {
           const n = Number(v);
           this.plugin.settings.reminderLeadMinutes = Number.isFinite(n) && n >= 0 && n <= 720 ? Math.round(n) : 10;
           await this.plugin.saveSettings();
@@ -583,7 +731,7 @@ export class BrewinSettingTab extends PluginSettingTab {
       .setName("Ignore reminders older than")
       .setDesc("Minutes. Stops a launch after lunch replaying the whole morning.")
       .addText((t) =>
-        t.setValue(String(this.plugin.settings.reminderGraceMinutes)).onChange(async (v) => {
+        numeric(t).setValue(String(this.plugin.settings.reminderGraceMinutes)).onChange(async (v) => {
           const n = Number(v);
           this.plugin.settings.reminderGraceMinutes = Number.isFinite(n) && n >= 0 ? Math.round(n) : 15;
           await this.plugin.saveSettings();
@@ -597,6 +745,18 @@ export class BrewinSettingTab extends PluginSettingTab {
         t.setPlaceholder("08:00").setValue(this.plugin.settings.reminderDigestTime).onChange(async (v) => {
           const s = v.trim();
           this.plugin.settings.reminderDigestTime = s === "" || /^\d{1,2}:\d{2}$/.test(s) ? s : "08:00";
+          await this.plugin.saveSettings();
+        })
+      );
+
+    new Setting(containerEl)
+      .setName("Shut down at")
+      .setDesc("HH:MM — a notice to close the day: what got done, and an answer for what's still open. Blank for none.")
+      .addText((t) =>
+        t.setPlaceholder("18:00").setValue(this.plugin.settings.shutdownTime).onChange(async (v) => {
+          const s = v.trim();
+          this.plugin.settings.shutdownTime = s === "" || /^\d{1,2}:\d{2}$/.test(s) ? s : "";
+          this.plugin.reminders?.markStale();
           await this.plugin.saveSettings();
         })
       );
@@ -624,7 +784,7 @@ export class BrewinSettingTab extends PluginSettingTab {
       .setDesc("Where the shared backlog notes (this plugin's own + the sibling plugins') live.")
       .addText((t) =>
         t.setValue(this.plugin.settings.accountabilityFolder).onChange(async (v) => {
-          this.plugin.settings.accountabilityFolder = v.trim();
+          this.plugin.settings.accountabilityFolder = this.folderValue("accountabilityFolder", v);
           await this.plugin.saveSettings();
         })
       );
@@ -682,7 +842,7 @@ export class BrewinSettingTab extends PluginSettingTab {
           "opens the item instead. Lower is quicker; higher is harder to trigger by accident."
       )
       .addText((t) =>
-        t.setValue(String(this.plugin.settings.dragHoldMs)).onChange(async (v) => {
+        numeric(t).setValue(String(this.plugin.settings.dragHoldMs)).onChange(async (v) => {
           const n = Number(v);
           this.plugin.settings.dragHoldMs = Number.isFinite(n) && n >= 100 && n <= 2000 ? Math.round(n) : 450;
           await this.plugin.saveSettings();
@@ -694,7 +854,7 @@ export class BrewinSettingTab extends PluginSettingTab {
       .setName("Trackable hours per day")
       .setDesc("Your waking day — what unallocated time is measured against. Use 24 to count the whole day.")
       .addText((t) =>
-        t.setValue(String(this.plugin.settings.trackedDayHours)).onChange(async (v) => {
+        numeric(t, "decimal").setValue(String(this.plugin.settings.trackedDayHours)).onChange(async (v) => {
           const n = Number(v);
           this.plugin.settings.trackedDayHours = Number.isFinite(n) && n > 0 && n <= 24 ? n : 16;
           await this.plugin.saveSettings();
@@ -707,7 +867,7 @@ export class BrewinSettingTab extends PluginSettingTab {
       .setName("Default task block length")
       .setDesc("Minutes given to a task dragged onto a calendar time slot.")
       .addText((t) =>
-        t.setValue(String(this.plugin.settings.defaultTaskMinutes)).onChange(async (v) => {
+        numeric(t).setValue(String(this.plugin.settings.defaultTaskMinutes)).onChange(async (v) => {
           const n = Number(v);
           this.plugin.settings.defaultTaskMinutes = Number.isFinite(n) && n > 0 ? Math.round(n) : 60;
           await this.plugin.saveSettings();
@@ -780,6 +940,9 @@ export class BrewinSettingTab extends PluginSettingTab {
           this.plugin.refreshViews();
         })
       );
+      // Named for a screen reader: a setting's row has no name of its own here.
+      s.controlEl.querySelector('input[type="text"]')?.setAttr("aria-label", "Category name");
+      s.controlEl.querySelector('input[type="color"]')?.setAttr("aria-label", `Colour for ${cat.name || "this category"}`);
       s.addExtraButton((b) =>
         b
           .setIcon("trash")
@@ -980,6 +1143,26 @@ export class BrewinSettingTab extends PluginSettingTab {
           await save();
         })
       );
+    new Setting(containerEl)
+      .setName("Pomodoro")
+      .setDesc("The clock runs in rounds: work, a short break, and a long break every few rounds — a chime and a note at each change. Only the work is logged.")
+      .addToggle((t) => t.setValue(s.pomodoro).onChange(async (v) => { s.pomodoro = v; await save(); this.display(); }));
+    if (s.pomodoro) {
+      const minutes = (name: string, key: "pomodoroWork" | "pomodoroShort" | "pomodoroLong" | "pomodoroEvery", min: number, max: number) =>
+        new Setting(containerEl).setName(name).setClass("brewin-ics-detail").addText((tx) =>
+          numeric(tx).setValue(String(s[key])).onChange(async (v) => {
+            const n = Number(v);
+            if (Number.isFinite(n) && n >= min && n <= max) {
+              s[key] = Math.round(n);
+              await save();
+            }
+          })
+        );
+      minutes("Work (minutes)", "pomodoroWork", 1, 180);
+      minutes("Short break (minutes)", "pomodoroShort", 0, 60);
+      minutes("Long break (minutes)", "pomodoroLong", 0, 120);
+      minutes("Rounds before a long break", "pomodoroEvery", 1, 12);
+    }
   }
 
   // ── Attributes of the user's own ─────────────────────────────────────────────
@@ -1093,6 +1276,89 @@ export class BrewinSettingTab extends PluginSettingTab {
             this.display();
           }).open()
         )
+    );
+  }
+
+  /** Other calendars: each one's name, colour and switches (synced), and its address on this device. */
+  private otherCalendars(containerEl: HTMLElement): void {
+    containerEl.createEl("h3", { text: "Other calendars" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text:
+        "Calendars from elsewhere — Google, Outlook, iCloud, a club's fixtures — shown read-only beside your events. Paste each one's " +
+        "secret .ics address. It stays on this device (never in the Planner's synced settings), so give it on each device you want " +
+        "the calendar on. They're fetched when Obsidian starts and every half hour while it's open.",
+    });
+    const plugin = this.plugin;
+    const save = async () => {
+      await plugin.saveSettings();
+      plugin.refreshViews();
+    };
+    for (const cal of plugin.settings.icsCalendars) {
+      const st = plugin.ics.statusOf(cal.id);
+      const said = st.error
+        ? `⚠️ Couldn't fetch it: ${st.error}.${st.fetched ? " Showing the last copy." : ""}`
+        : st.fetched
+          ? `${st.events} event${st.events === 1 ? "" : "s"} · fetched ${new Date(st.fetched).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}`
+          : plugin.ics.url(cal.id)
+            ? "Not fetched yet."
+            : "No address on this device yet.";
+      const row = new Setting(containerEl)
+        .setName(cal.name)
+        .setDesc(said)
+        .addText((t) => t.setValue(cal.name).setPlaceholder("Its name").onChange(async (v) => {
+          cal.name = v.trim() || NEW_CALENDAR_NAME;
+          await save();
+        }))
+        .addColorPicker((c) => c.setValue(cal.color).onChange(async (v) => {
+          cal.color = v;
+          await save();
+        }))
+        .addToggle((t) => t.setTooltip("Show it").setValue(cal.show).onChange(async (v) => {
+          cal.show = v;
+          await save();
+        }))
+        .addExtraButton((b) => b.setIcon("refresh-cw").setTooltip("Fetch it now").onClick(async () => {
+          await plugin.ics.refresh(cal.id);
+          this.display();
+        }))
+        .addExtraButton((b) => b.setIcon("trash").setTooltip("Take this calendar out").onClick(async () => {
+          plugin.ics.forget(cal.id);
+          plugin.settings.icsCalendars = plugin.settings.icsCalendars.filter((c) => c.id !== cal.id);
+          await save();
+          this.display();
+        }));
+      row.controlEl.querySelector('input[type="text"]')?.setAttr("aria-label", "Calendar name");
+      row.controlEl.querySelector('input[type="color"]')?.setAttr("aria-label", `Colour for ${cal.name}`);
+      new Setting(containerEl)
+        .setName("Address on this device")
+        .setClass("brewin-ics-detail")
+        .addText((t) => {
+          t.setPlaceholder("https://…/basic.ics").setValue(plugin.ics.url(cal.id));
+          t.inputEl.addClass("brewin-ics-url");
+          t.inputEl.setAttr("aria-label", `Address of ${cal.name} on this device`);
+          t.onChange((v) => plugin.ics.setUrl(cal.id, v));
+          // Fetched once the address is in, not at every keystroke.
+          t.inputEl.addEventListener("change", async () => {
+            await plugin.ics.refresh(cal.id);
+            this.display();
+          });
+        });
+      new Setting(containerEl)
+        .setName("Counts as busy")
+        .setDesc("Its timed events take up time in Today's free time, auto-schedule and Plan my day.")
+        .setClass("brewin-ics-detail")
+        .addToggle((t) => t.setValue(cal.busy).onChange(async (v) => {
+          cal.busy = v;
+          await save();
+        }));
+    }
+    new Setting(containerEl).addButton((b) =>
+      b.setButtonText("＋ Add a calendar").onClick(async () => {
+        plugin.settings.icsCalendars.push({ id: `cal-${Date.now().toString(36)}`, name: NEW_CALENDAR_NAME, color: "#0ea5e9", busy: true, show: true });
+        await save();
+        this.display();
+      })
     );
   }
 }

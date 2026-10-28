@@ -9,8 +9,10 @@ import { ConfirmModal } from "./confirmModal";
 import { PromptModal } from "./promptModal";
 import { formatEstimate } from "./estimate";
 import { todayISO } from "./dates";
-import { clockText, minutesInRange, minutesText, parseManualSession, TimeSession, totalMinutes } from "./timeTrack";
+import { clockText, minutesInRange, minutesText, parseManualSession, pomodoroPhase, TimeSession, totalMinutes } from "./timeTrack";
 import { relativeDay } from "./status";
+import type { Task } from "./types";
+import { pressable, restoreFocus, saveFocus } from "./a11y";
 
 const pad = (n: number) => String(n).padStart(2, "0");
 const hm = (ms: number) => {
@@ -29,6 +31,7 @@ export class FocusModal extends Modal {
   private leaving = false;
   private tick: number | null = null;
   private clockEl: HTMLElement | null = null;
+  private phaseEl: HTMLElement | null = null;
   private stateEl: HTMLElement | null = null;
   private offTimer: (() => void) | null = null;
   private cacheRef: EventRef | null = null;
@@ -93,12 +96,25 @@ export class FocusModal extends Modal {
     const mine = timer.isRunning(this.path);
     this.clockEl?.setText(clockText(mine ? timer.elapsed() : 0));
     this.clockEl?.toggleClass("is-running", mine);
+    // Pomodoro: which round or break, and what's left of it.
+    const pom = timer.pomodoro();
+    const ph = mine && pom ? pomodoroPhase(timer.elapsed(), pom) : null;
+    this.phaseEl?.setText(ph ? (ph.kind === "work" ? `🍅 Round ${ph.round} — ${clockText(ph.left)} left` : `☕ ${ph.kind === "long" ? "Long break" : "Break"} — ${clockText(ph.left)} left`) : "");
+    this.phaseEl?.toggleClass("brewin-hidden", !ph);
   }
 
   private render(): void {
     const task = this.plugin.store.getByPath(this.path);
     const { contentEl } = this;
+    // This redraws every minute while timing, and on Start and Pause: keep the keyboard on its button.
+    const focus = saveFocus(contentEl);
     contentEl.empty();
+    this.draw(task);
+    restoreFocus(contentEl, focus);
+  }
+
+  private draw(task: Task | null): void {
+    const { contentEl } = this;
     if (!task) {
       contentEl.createEl("p", { text: "This task's note has gone — it was deleted or renamed." });
       return;
@@ -110,9 +126,10 @@ export class FocusModal extends Modal {
 
     const root = contentEl.createDiv({ cls: "brewin-focus" });
     root.createDiv({ cls: "brewin-focus-kicker", text: mine ? "⏱ Focus · timing" : "⏱ Focus" });
-    const title = root.createEl("h2", { cls: "brewin-focus-title", text: task.title });
-    title.setAttr("aria-label", "Open the task's note");
-    title.addEventListener("click", () => this.openNote());
+    // A heading, read as the task's name; the name inside it opens the note.
+    const title = root.createEl("h2", { cls: "brewin-focus-title" });
+    const name = pressable(title.createSpan({ text: task.title, attr: { title: "Open the task's note", "data-focus": "title" } }));
+    name.addEventListener("click", () => this.openNote());
 
     const meta = [
       task.scheduled ? `📅 ${relativeDay(task.scheduled, today)}` : "",
@@ -123,6 +140,7 @@ export class FocusModal extends Modal {
     if (meta.length) root.createDiv({ cls: "brewin-focus-meta", text: meta.join(" · ") });
 
     this.clockEl = root.createDiv({ cls: "brewin-focus-clock" });
+    this.phaseEl = root.createDiv({ cls: "brewin-focus-phase", attr: { "aria-live": "polite" } });
     this.paintClock();
     this.stateEl = root.createDiv({ cls: "brewin-focus-state" });
     const run = timer.running;
@@ -131,6 +149,7 @@ export class FocusModal extends Modal {
     else this.stateEl.setText("Not started yet.");
 
     const actions = root.createDiv({ cls: "brewin-focus-actions" });
+    // Start and Pause share a key: pressing one draws the other in its place, with the focus on it.
     if (mine) {
       this.button(actions, "⏸ Pause", "mod-cta", async () => {
         const min = await timer.pause();
@@ -221,13 +240,20 @@ export class FocusModal extends Modal {
   }
 
   private button(parent: HTMLElement, text: string, cls: string, run: () => unknown): HTMLButtonElement {
-    const b = parent.createEl("button", { text, cls: `brewin-focus-btn ${cls}`.trim() });
+    // A key for focus to come back to after a redraw — Start, Resume and Pause are the same place.
+    const key = /Pause|Start|Resume/.test(text) ? "clock" : text;
+    const b = parent.createEl("button", { text, cls: `brewin-focus-btn ${cls}`.trim(), attr: { "data-focus": key } });
+    // Busy, not disabled: a disabled button drops the keyboard focus, which the redraw then can't restore.
+    let busy = false;
     b.addEventListener("click", async () => {
-      b.disabled = true;
+      if (busy) return;
+      busy = true;
+      b.setAttr("aria-disabled", "true");
       try {
         await run();
       } finally {
-        b.disabled = false;
+        busy = false;
+        b.removeAttribute("aria-disabled");
       }
     });
     return b;
@@ -271,6 +297,7 @@ export class FocusModal extends Modal {
   private deleteSession(s: TimeSession): void {
     new ConfirmModal(this.app, {
       title: "Delete this session?",
+      danger: true,
       body: `${s.day === todayISO() ? "Today" : dayLabel(s.day)}, ${hm(s.start)}–${hm(s.end)} (${minutesText(s.minutes)})${this.plugin.settings.timerToCalendar ? ", and its calendar event" : ""}.`,
       cta: "Delete",
       onConfirm: () => void this.plugin.timer.deleteSession(this.path, s.raw),

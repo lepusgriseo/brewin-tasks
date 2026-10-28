@@ -5,6 +5,7 @@
 
 import { sanitizeFilename } from "./task";
 import { shiftISO } from "./dates";
+import { yamlString } from "./yaml";
 
 /**
  * Trip note name: "YYYY-MM-DD - <end> Destination". `<end>` is just the end day-of-month
@@ -46,7 +47,7 @@ export function tripNoteContent(destination: string, startISO: string, endISO: s
     `modified: ${createdISO}`,
     "tags:",
     "  - trip",
-    `destination: ${destination}`,
+    `destination: ${yamlString(destination)}`,
     `start_date: ${startISO}`,
     `end_date: ${endISO}`,
     "budget_estimated: ",

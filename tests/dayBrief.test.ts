@@ -79,3 +79,34 @@ test("dayBrief: overdue, stalled and deadlines are only reported on today's note
   const past = dayBrief({ date: YESTERDAY, today: TODAY, items: [], tasks, projects });
   assert.deepEqual([past.overdue, past.stalled, past.deadlines], [[], [], []]);
 });
+
+test("dayBrief lists the day's top three, open ones first", () => {
+  const b = dayBrief({
+    date: "2026-10-27",
+    today: "2026-10-27",
+    items: [],
+    tasks: [
+      task({ title: "Done star", path: "d.md", top: "2026-10-27", status: "done", completed: "2026-10-27" }),
+      task({ title: "Open star", path: "o.md", top: "2026-10-27" }),
+      task({ title: "Yesterday's", path: "y.md", top: "2026-10-26" }),
+    ],
+    projects: [],
+  });
+  assert.deepEqual(b.top, [
+    { path: "o.md", title: "Open star", done: false },
+    { path: "d.md", title: "Done star", done: true },
+  ]);
+});
+
+test("dayBrief lists checkbox tasks from other notes on the day, apart from the schedule", () => {
+  const note = (p: Partial<CalendarItem>) => ({ kind: "note", path: "Meeting.md", title: "Send minutes", date: "2026-10-27", allDay: true, start: null, end: null, done: false, category: "Notes", recurring: false, line: 4, ...p }) as CalendarItem;
+  const b = dayBrief({
+    date: "2026-10-27",
+    today: "2026-10-27",
+    items: [note({}), note({ title: "Other day", date: "2026-10-28" })],
+    tasks: [],
+    projects: [],
+  });
+  assert.deepEqual(b.notes, [{ path: "Meeting.md", title: "Send minutes", line: 4 }]);
+  assert.equal(b.schedule.length, 0);
+});
