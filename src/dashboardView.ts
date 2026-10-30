@@ -32,7 +32,7 @@ import { ProjectSuggestModal } from "./projectSuggestModal";
 import { completionRefusal, isOpen } from "./status";
 import { toWikilink } from "./task";
 import { birthdayPage, birthdaysBetween, formatBirthDate, parseBirthDate, Person } from "./birthdays";
-import { deadline, deadlineLabel, isStalled, plainText, PROJECT_STATUSES, ProjectStatus, STATUS_GLYPH, STATUS_LABEL } from "./projects";
+import { deadline, deadlineLabel, isStalled, nextSteps, plainText, PROJECT_STATUSES, ProjectStatus, STATUS_GLYPH, STATUS_LABEL } from "./projects";
 import type { ProjectInfo } from "./projects";
 import { NextActionModal } from "./nextActionModal";
 import {
@@ -1629,7 +1629,9 @@ export class DashboardView extends ItemView {
       .filter((p) => p.info.status === "active" || p.info.status === "waiting")
       .sort((a, b) => Number(a.info.status === "waiting") - Number(b.info.status === "waiting"));
     if (!list.length) return;
-    const copyable = list.filter((p) => !!p.info.next);
+    // Every open #next step is a next action to copy — all of them, as Life HQ lists them.
+    const nextText = (p: MenuProject) => nextSteps(p.inline).map((s) => plainText(s.text)).join(" · ");
+    const copyable = list.filter((p) => !!nextText(p));
     const keyOf = (p: MenuProject) => `project|${p.path}`;
 
     const open = this.reviewProjOpen;
@@ -1662,7 +1664,8 @@ export class DashboardView extends ItemView {
     for (const p of list) {
       const key = keyOf(p);
       const row = box.createDiv({ cls: "brewin-review-row brewin-review-proj" + (this.transferred.has(key) ? " is-transferred" : "") });
-      if (p.info.next) {
+      const next = nextText(p);
+      if (next) {
         // As on the days below: "written into the journal", never done. It touches no note.
         const tick = row.createEl("input", { type: "checkbox", cls: "brewin-transfer-box" });
         tick.checked = this.transferred.has(key);
@@ -1685,17 +1688,15 @@ export class DashboardView extends ItemView {
       row.createSpan({ cls: "brewin-review-glyph", text: STATUS_GLYPH[waiting ? "waiting" : "active"] });
       const main = row.createDiv({ cls: "brewin-review-title brewin-review-proj-main" });
       pressable(main.createSpan({ cls: "brewin-task-link brewin-review-proj-name", text: p.name })).addEventListener("click", () => this.go({ project: p.path }));
-      const stalled = isStalled(p.info, p.inline);
-      const runners = p.inline.filter((st) => st.isNext).length;
       const what = waiting
-        ? [p.info.waitingOn ? `waiting on ${p.info.waitingOn}` : "waiting", p.info.next ? `then: ${plainText(p.info.next)}` : ""].filter(Boolean).join(" · ")
-        : plainText(p.info.next) || (stalled ? "🚩 No next action" : `No next action — ${runners} ⚡ step${runners === 1 ? "" : "s"} ready`);
-      main.createSpan({ cls: "brewin-review-proj-next" + (!p.info.next && !waiting ? " is-unset" : ""), text: what });
+        ? [p.info.waitingOn ? `waiting on ${p.info.waitingOn}` : "waiting", next ? `then: ${next}` : ""].filter(Boolean).join(" · ")
+        : next || "🚩 No next action";
+      main.createSpan({ cls: "brewin-review-proj-next" + (!next && !waiting ? " is-unset" : ""), text: what });
       const d = deadline(p.info, today);
       if (d?.overdue) main.createSpan({ cls: "brewin-review-proj-due", text: `🏁 ${deadlineLabel(d)}` });
-      if (!p.info.next) {
+      if (!next) {
         const b = row.createEl("button", { cls: "brewin-chip-mini", text: "Choose…" });
-        b.addEventListener("click", () => this.advanceNext(p, false));
+        b.addEventListener("click", () => this.advanceNext(p, null));
       }
     }
   }
@@ -2504,10 +2505,12 @@ export class DashboardView extends ItemView {
         const row = body.createDiv({ cls: "brewin-proj-row" });
         const link = pressable(row.createSpan({ cls: "brewin-task-link", text: p.name }));
         link.addEventListener("click", () => this.go({ project: p.path }));
+        const next = nextSteps(p.inline)[0];
+        const then = next ? plainText(next.text) : "";
         const meta =
           p.info.status === "waiting"
-            ? [p.info.waitingOn ? `waiting on ${p.info.waitingOn}` : "waiting", p.info.next ? `then: ${plainText(p.info.next)}` : ""]
-            : [p.info.status === null ? "no status" : "", plainText(p.info.next)];
+            ? [p.info.waitingOn ? `waiting on ${p.info.waitingOn}` : "waiting", then ? `then: ${then}` : ""]
+            : [p.info.status === null ? "no status" : "", then];
         const text = meta.filter(Boolean).join(" · ");
         if (text) row.createSpan({ cls: "brewin-proj-row-meta", text });
       }
@@ -2517,34 +2520,31 @@ export class DashboardView extends ItemView {
   }
 
   /**
-   * Under a project's name: its next action (tap to change it, ✓ when it's done), or — when it has
-   * none — what to do about that; and its deadline, when it has one.
+   * Under a project's name: its next action — its first open `#next` step (tap to edit it, ✓ when
+   * it's done) — or, when it has none, what to do about that; and its deadline, when it has one.
    */
   private projectBrief(parent: HTMLElement, p: MenuProject, today: string, showDue = true): void {
     const box = parent.createDiv({ cls: "brewin-proj-brief" });
     const next = box.createDiv({ cls: "brewin-proj-next" });
-    if (p.info.next) {
+    const steps = nextSteps(p.inline);
+    if (steps.length) {
+      const first = steps[0];
       next.createSpan({ cls: "brewin-proj-next-label", text: "Next" });
-      const text = next.createSpan({ cls: "brewin-proj-next-text", text: plainText(p.info.next) });
-      pressable(text, { label: `Next action: ${plainText(p.info.next)} — change it` });
-      text.addEventListener("click", () => this.editNext(p));
+      const text = next.createSpan({ cls: "brewin-proj-next-text", text: plainText(first.text) });
+      pressable(text, { label: `Next action: ${plainText(first.text)} — edit it` });
+      text.addEventListener("click", () => this.plugin.openStep(first, () => this.render()));
+      if (steps.length > 1) {
+        next.createSpan({ cls: "brewin-count", text: `+${steps.length - 1}`, attr: { title: steps.slice(1).map((s) => plainText(s.text)).join("\n") } });
+      }
       const done = next.createEl("button", { cls: "brewin-chip-mini", text: "✓ Done" });
       done.setAttr("aria-label", "The next action is done — choose the one after it");
-      done.addEventListener("click", () => this.advanceNext(p, true));
+      done.addEventListener("click", () => this.advanceNext(p, first));
     } else {
-      const runners = p.inline.filter((s) => s.isNext).length;
       const stalled = isStalled(p.info, p.inline);
       next.addClass(stalled ? "is-stalled" : "is-unset");
       box.toggleClass("is-stalled", stalled);
-      next.createSpan({
-        cls: "brewin-proj-next-text",
-        text: stalled
-          ? "🚩 No next action"
-          : p.info.status === "active"
-            ? `No next action — ${runners} ⚡ step${runners === 1 ? "" : "s"} ready`
-            : "No next action",
-      });
-      next.createEl("button", { cls: "brewin-chip-mini", text: "Choose…" }).addEventListener("click", () => this.advanceNext(p, false));
+      next.createSpan({ cls: "brewin-proj-next-text", text: stalled ? "🚩 No next action" : "No next action" });
+      next.createEl("button", { cls: "brewin-chip-mini", text: "Choose…" }).addEventListener("click", () => this.advanceNext(p, null));
     }
     const d = showDue ? deadline(p.info, today) : null;
     if (d) {
@@ -2639,7 +2639,8 @@ export class DashboardView extends ItemView {
     if (st) meta.createSpan({ text: `${STATUS_GLYPH[st]} ${STATUS_LABEL[st]}` });
     if (p.total) meta.createSpan({ text: `${p.done}/${p.total} done` });
     if (p.due) meta.createSpan({ cls: p.due < today ? "brewin-meta-overdue" : "brewin-meta-due", text: `🏁 ${shortDate(p.due)}`, attr: { title: p.due } });
-    if (p.next) row.createDiv({ cls: "brewin-goal-next", text: `→ ${plainText(p.next)}` });
+    const next = nextSteps(this.projects.find((x) => x.path === p.path)?.inline ?? [])[0];
+    if (next) row.createDiv({ cls: "brewin-goal-next", text: `→ ${plainText(next.text)}` });
   }
 
   private statusMenu(ev: MouseEvent, p: MenuProject): void {
@@ -2691,30 +2692,17 @@ export class DashboardView extends ItemView {
     void this.change(`${p.name}: ${STATUS_LABEL[status]}`, () => store.setStatus(p.info, status));
   }
 
-  /** Finish the next action and choose the one after it — or, with `done` false, just choose one. */
-  private advanceNext(p: MenuProject, done: boolean): void {
+  /** Finish the `#next` step `done` and choose the one after it — or, with `done` null, just choose one. */
+  private advanceNext(p: MenuProject, done: ProjectTask | null): void {
     const steps = [...p.inline].sort((a, b) => a.line - b.line); // offered in the note's own order
     new NextActionModal(this.app, {
       project: p.info,
       steps,
       done,
-      onSubmit: (c) =>
-        void this.change(c.next ? `${p.name} — next: ${plainText(c.next)}` : `${p.name}: no next action yet`, () =>
-          this.plugin.projects.advance(p.info, { done, ...c })
-        ),
-    }).open();
-  }
-
-  private editNext(p: MenuProject): void {
-    new PromptModal(this.app, {
-      title: `Next action — ${p.name}`,
-      body: "One physical action. Leave it empty to clear it.",
-      initial: p.info.next,
-      cta: "Save",
-      allowEmpty: true,
-      onSubmit: (value) => {
-        if (value === p.info.next) return;
-        void this.change(value ? `${p.name} — next: ${plainText(value)}` : `${p.name}: next action cleared`, () => this.plugin.projects.setNext(p.info, value));
+      onSubmit: (c) => {
+        const chosen = c.add || (c.promote ? c.promote.text : "");
+        const label = chosen ? `${p.name} — next: ${plainText(chosen)}` : done ? `✓ ${plainText(done.text)}` : `${p.name}: no next action yet`;
+        void this.change(label, () => this.plugin.projects.advance(p.info, { done, ...c }));
       },
     }).open();
   }

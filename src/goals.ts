@@ -19,7 +19,6 @@ export interface GoalProject {
   path: string;
   name: string;
   status: string | null;
-  next: string;
   due: string | null;
   /** The goal its `goal:` links to, resolved — null for none, or a link to nothing. */
   goalPath: string | null;

@@ -51,13 +51,15 @@ Its plugin id is `brewin-tasks`; it is called Brewin Planner because it grew pas
   built-in four and behaves exactly like it, with its own icon and name on the task row, in the ⋯ menu
   and the edit window, and in the menu's Statuses section (tap to list, drop a task to set). Notes keep
   the built-in value in `status:` and the custom one in `flag:`, so queries on `status:` keep working.
-- **Projects, the way Project HQ runs them.** Each project shows its next action (`next:`) and
-  deadline (`due:`) under its name. **✓ Done** writes the finished action into the note's log, offers
-  to tick the step it came from, and asks what's next, with the note's `#next` steps first. A
-  project's page changes its status (active, waiting on something, someday, done) and its deadline.
-  The menu marks an active project with no next action and no `#next` step 🚩, the same rule as HQ's
-  Stalled list, and lists waiting projects with what they wait on. The Review's week has a projects
-  step: each next action, ticked as you copy it into the notebook.
+- **Projects, the way Project HQ runs them.** A project's next action is an open step in its note
+  tagged `#next` — nothing else; there is no `next:` property. Each project shows its first `#next`
+  step (and how many more) and its deadline (`due:`) under its name; tap the step to edit it.
+  **✓ Done** ticks that step, writes it into the note's log, and asks what's next: tap a step to tag
+  it `#next`, or type one and it's added under `## Tasks`, tagged. A project's page changes its status
+  (active, waiting on something, someday, done) and its deadline. The menu marks an active project
+  with no open `#next` step 🚩, the same rule as Life HQ's Stalled list, and lists waiting projects
+  with what they wait on. The Review's week has a projects step: each project's `#next` steps,
+  ticked as you copy them into the notebook.
 - **Birthdays** from your people notes: the date in a note's `DOB::` line (`1990-03-18`, or
   `5 November` when the year isn't known) puts a 🎂 on the calendar every year, with the age when
   the year is known. The morning digest names today's birthdays and warns a set number of days
@@ -232,8 +234,8 @@ system, and the shared backlog folder.
   `- [ ] Book the van [offset:: -14d]` (`-4w`, `0`, `+3d`…). Offsets count from the deadline, or from
   the day it starts with `from: start`; `area:` and `goal:` pass to the project.
 - *New project from template…* asks for a name and a deadline, then writes the project note (status
-  active, started today, the deadline as `due`, the first `#next` step as `next`) with each step
-  dated — `[scheduled:: …]` — and opens it. Undo takes it away again.
+  active, started today, the deadline as `due`) with each step dated — `[scheduled:: …]`, the
+  template's `#next` steps still tagged — and opens it. Undo takes it away again.
 
 ## Goals
 
@@ -243,7 +245,8 @@ system, and the shared backlog folder.
   projects' steps and task notes, and each project's status, progress, deadline and next action —
   then active projects serving no goal, then goals parked or finished. A project's page shows its
   goal as a chip.
-- `app.plugins.plugins["brewin-tasks"].api.goals()` gives the same for the review notes.
+- `app.plugins.plugins["brewin-tasks"].api.goals()` gives the same for the review notes (since 1.70
+  without a project's next action — read its `#next` steps instead).
 
 ## Other calendars
 

@@ -4,7 +4,7 @@
 // deadline and writes the project note with each of those steps dated. Pure, no Obsidian imports.
 
 import { shiftISO } from "./dates";
-import { displayText, parseInlineTask } from "./inlineTask";
+import { parseInlineTask } from "./inlineTask";
 import { yamlString } from "./yaml";
 
 export interface ProjectTemplate {
@@ -47,20 +47,18 @@ export function parseProjectTemplate(note: { path: string; basename: string; fro
 
 /**
  * The project note a template makes: frontmatter as the user's own project notes have it (status
- * active, started today, the deadline as `due`, the template's area and goal, the first #next step
- * as `next`), then the template's body with each offset turned into a do-date — or dropped, when
- * there's no deadline to count from.
+ * active, started today, the deadline as `due`, the template's area and goal), then the template's
+ * body with each offset turned into a do-date — or dropped, when there's no deadline to count from.
+ * The template's `#next` steps stay tagged: they are the new project's next actions.
  */
 export function projectNoteFromTemplate(t: ProjectTemplate, o: { deadline: string | null; today: string; hub: string }): { text: string; dated: number } {
   const base = t.from === "start" ? o.today : o.deadline;
   let dated = 0;
-  let next = "";
   const body = t.body
     .split("\n")
     .map((line) => {
       const task = parseInlineTask(line);
       if (!task || task.mark !== " ") return line;
-      if (!next && task.next) next = displayText(task.text);
       const m = OFFSET.exec(line);
       if (!m) return line;
       const days = Number(m[1]) * (m[2]?.toLowerCase() === "w" ? 7 : 1);
@@ -76,7 +74,6 @@ export function projectNoteFromTemplate(t: ProjectTemplate, o: { deadline: strin
     "tags:",
     "  - project",
     "status: active",
-    `next: ${yamlString(next)}`,
     'waiting_on: ""',
     `area: ${yamlString(t.area)}`,
     `goal: ${t.goal ? JSON.stringify(t.goal) : '""'}`,

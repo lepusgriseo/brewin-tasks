@@ -4,7 +4,7 @@ import { goalsOverview, GoalInfo, GoalProject } from "../src/goals.ts";
 import { parseProjectTemplate, projectNoteFromTemplate } from "../src/projectTemplate.ts";
 
 const goal = (p: Partial<GoalInfo>): GoalInfo => ({ path: "G.md", name: "G", status: "active", area: "", period: "", targetDate: null, completed: null, ...p });
-const project = (p: Partial<GoalProject>): GoalProject => ({ path: "P.md", name: "P", status: "active", next: "", due: null, goalPath: null, done: 0, total: 0, ...p });
+const project = (p: Partial<GoalProject>): GoalProject => ({ path: "P.md", name: "P", status: "active", due: null, goalPath: null, done: 0, total: 0, ...p });
 
 test("goalsOverview: each goal with its live projects and their progress, soonest target first", () => {
   const o = goalsOverview(
@@ -49,7 +49,7 @@ test("projectNoteFromTemplate dates the steps from the deadline and fills the fr
   const t = parseProjectTemplate(TEMPLATE)!;
   const { text, dated } = projectNoteFromTemplate(t, { deadline: "2026-12-19", today: "2026-10-28", hub: "03_Projects" });
   assert.equal(dated, 3);
-  assert.match(text, /^---\nup: "\[\[03_Projects\]\]"\ntags:\n  - project\nstatus: active\nnext: Book the van\nwaiting_on: ""\narea: Home\ngoal: "\[\[Deposit\]\]"\ndue: 2026-12-19\nstarted: 2026-10-28\ncompleted:\n---\n## Tasks\n/);
+  assert.match(text, /^---\nup: "\[\[03_Projects\]\]"\ntags:\n  - project\nstatus: active\nwaiting_on: ""\narea: Home\ngoal: "\[\[Deposit\]\]"\ndue: 2026-12-19\nstarted: 2026-10-28\ncompleted:\n---\n## Tasks\n/);
   assert.match(text, /- \[ \] Give notice \[scheduled:: 2026-11-21\]\n- \[ \] Book the van \[scheduled:: 2026-12-05\] #next\n- \[ \] Hand back the keys \[scheduled:: 2026-12-19\]\n- \[ \] Tell the bank\n/);
   // No deadline: the offsets have nothing to count from and go.
   const bare = projectNoteFromTemplate(t, { deadline: null, today: "2026-10-28", hub: "03_Projects" });

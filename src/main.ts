@@ -936,7 +936,6 @@ export default class BrewinTasksPlugin extends Plugin {
         path: info.path,
         name: info.name,
         status: info.status,
-        next: info.next,
         due: info.due,
         goalPath: this.goalOf(info.path)?.path ?? null,
         done: boxes.filter((li) => li.task !== " ").length + mine.filter((t) => t.status === "done").length,

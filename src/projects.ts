@@ -30,8 +30,6 @@ export interface ProjectInfo {
   name: string;
   /** Null when the note has no status, or one HQ wouldn't recognise. */
   status: ProjectStatus | null;
-  /** THE next physical action — "" when none is set. */
-  next: string;
   waitingOn: string;
   due: string | null;
   /** The day it began (`started:`), for the timeline. */
@@ -48,7 +46,6 @@ export function projectFromFrontmatter(path: string, name: string, fm: Record<st
     path,
     name,
     status: (PROJECT_STATUSES as string[]).includes(raw) ? (raw as ProjectStatus) : null,
-    next: text(fm?.next),
     waitingOn: text(fm?.waiting_on),
     due: coerceISO(fm?.due),
     started: coerceISO(fm?.started),
@@ -57,11 +54,16 @@ export function projectFromFrontmatter(path: string, name: string, fm: Record<st
 }
 
 /**
- * HQ's 🚩 Stalled rule: an active project with no `next:` and no open `#next` step. A project
- * with runner-up steps but nothing in `next:` is not stalled — one of them just needs promoting.
+ * A project's next actions: its open steps tagged `#next`, in the note's order. The tag is the one
+ * place a next action lives — Life HQ and Project HQ read the same thing.
  */
+export function nextSteps<T extends { isNext: boolean; line: number }>(steps: readonly T[]): T[] {
+  return steps.filter((s) => s.isNext).sort((a, b) => a.line - b.line);
+}
+
+/** The 🚩 Stalled rule, as Life HQ has it: an active project with no open `#next` step. */
 export function isStalled(p: ProjectInfo, openSteps: readonly { isNext: boolean }[]): boolean {
-  return p.status === "active" && !p.next && !openSteps.some((s) => s.isNext);
+  return p.status === "active" && !openSteps.some((s) => s.isNext);
 }
 
 const dayNumber = (iso: string) => Math.round(Date.parse(iso + "T00:00:00Z") / 86400000);
@@ -102,56 +104,7 @@ export function plainText(s: string): string {
     .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=[\s).,;:!?]|$)/g, "$1$2");
 }
 
-const STOP = new Set(["the", "and", "for", "with", "your", "you", "into", "from", "that", "this"]);
-
-function words(s: string): string[] {
-  return s
-    .toLowerCase()
-    .replace(/[`*_~[\]()]/g, " ")
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((w) => w.length >= 3 && !STOP.has(w));
-}
-
-/**
- * The open step a finished next action most likely was. The next action is usually a step copied
- * up and reworded, so:
- *
- * - **sure** — the step holds at least three quarters of the action's words (or exactly them). The
- *   dialog offers to tick it, already ticked.
- * - **a guess** — a short step the action mostly repeats ("MediEvil" for "Download MediEvil
- *   (PS1)"), or one sharing three words or more. Offered, but left for you to tick.
- *
- * Null when nothing is that close. Nothing is ever ticked without being shown first.
- */
-export function matchStep<T extends { text: string; isNext?: boolean }>(next: string, steps: readonly T[]): { step: T; sure: boolean } | null {
-  const want = words(next);
-  if (!want.length) return null;
-  const exact = want.join(" ");
-  type Scored = { step: T; shared: number; cover: number; overlap: number };
-  const scored: Scored[] = [];
-  for (const step of steps) {
-    const have = words(step.text);
-    if (have.join(" ") === exact) return { step, sure: true };
-    const set = new Set(have);
-    const shared = want.filter((w) => set.has(w)).length;
-    if (shared) scored.push({ step, shared, cover: shared / want.length, overlap: shared / Math.min(want.length, have.length) });
-  }
-  // Ties go to a #next step, then to the earlier line — steps arrive in note order.
-  const pick = (list: Scored[], key: (s: Scored) => number[]) =>
-    list.reduce<Scored | null>((best, s) => {
-      if (!best) return s;
-      const a = [...key(s), s.step.isNext ? 1 : 0];
-      const b = [...key(best), best.step.isNext ? 1 : 0];
-      const i = a.findIndex((v, j) => v !== b[j]);
-      return i >= 0 && a[i] > b[i] ? s : best;
-    }, null);
-  const sure = want.length >= 2 ? pick(scored.filter((s) => s.cover >= 0.75), (s) => [s.cover, s.overlap]) : null;
-  if (sure) return { step: sure.step, sure: true };
-  const guess = pick(scored.filter((s) => s.overlap >= 0.6 || s.shared >= 3), (s) => [s.shared, s.overlap]);
-  return guess ? { step: guess.step, sure: false } : null;
-}
-
-/** Steps to offer as the next action: the `#next` ones first, then the rest in note order. */
+/** Steps to offer as the next action: any already tagged `#next` first, then the rest in note order. */
 export function promoteCandidates<T extends { isNext: boolean }>(steps: readonly T[], except: T | null = null): T[] {
   const rest = steps.filter((s) => s !== except);
   return [...rest.filter((s) => s.isNext), ...rest.filter((s) => !s.isNext)];
@@ -161,7 +114,6 @@ export function promoteCandidates<T extends { isNext: boolean }>(steps: readonly
 
 export interface ProjectPatch {
   status?: ProjectStatus;
-  next?: string;
   waiting_on?: string;
   due?: string | null;
   completed?: string | null;
@@ -171,14 +123,13 @@ export interface ProjectPatch {
 /** Where a key goes when the note doesn't have it yet — beside the field it is read with. */
 const AFTER: Record<keyof ProjectPatch, string[]> = {
   status: ["tags"],
-  next: ["status"],
-  waiting_on: ["next", "status"],
-  due: ["goal", "area", "waiting_on", "next"],
+  waiting_on: ["status"],
+  due: ["goal", "area", "waiting_on"],
   completed: ["started", "due"],
   modified: ["completed", "started"],
 };
 
-const STRING_KEYS = new Set<keyof ProjectPatch>(["next", "waiting_on"]);
+const STRING_KEYS = new Set<keyof ProjectPatch>(["waiting_on"]);
 
 function yamlLine(key: keyof ProjectPatch, value: string | null): string {
   if (STRING_KEYS.has(key)) return `${key}: ${JSON.stringify(value ?? "")}`; // a JSON string is a valid YAML one
@@ -188,7 +139,7 @@ function yamlLine(key: keyof ProjectPatch, value: string | null): string {
 /**
  * Set project fields in a note's frontmatter, line by line. Every other byte stays as it was, so a
  * change is a one-line diff in git — re-serialising the whole block would requote every field.
- * Strings are written quoted (`next: "…"`), dates bare, and a cleared date as `due:`, the way the
+ * Strings are written quoted (`waiting_on: "…"`), dates bare, and a cleared date as `due:`, the way the
  * project template writes them.
  */
 export function withProjectFields(text: string, patch: ProjectPatch): string {
@@ -227,15 +178,32 @@ export function tickStep(lines: string[], line: number, raw: string, doneISO?: s
   return true;
 }
 
-/**
- * Take `#next` off a step that has just become THE next action — it is in `next:` now, and
- * leaving the tag would list it in HQ's runner-up list as well.
- */
-export function untagStep(lines: string[], line: number, raw: string): boolean {
+/** Tag a step `#next` — the project's next action — in the line's own style. */
+export function tagStep(lines: string[], line: number, raw: string): boolean {
   const at = lines[line] === raw ? line : lines.indexOf(raw);
-  if (at < 0 || !/#next\b/.test(lines[at])) return false;
-  lines[at] = lines[at].replace(/\s*#next\b/, "");
+  if (at < 0 || /#next\b/.test(lines[at])) return false;
+  lines[at] = writeInlineTask(lines[at], { next: true }, "");
   return true;
+}
+
+/**
+ * A next action typed rather than chosen: a new open step tagged `#next`, first under the note's
+ * `## Tasks` (it reads first because it is next) — or in a Tasks section of its own, before the log.
+ */
+export function withNewStep(text: string, words: string): string {
+  const step = `- [ ] ${words.replace(/\s+/g, " ").trim()} #next`;
+  const lines = text.split("\n");
+  const tasks = lines.findIndex((l) => /^##\s+Tasks\s*$/.test(l));
+  if (tasks >= 0) {
+    lines.splice(tasks + 1, 0, step);
+    return lines.join("\n");
+  }
+  const log = lines.findIndex((l) => /^##\s+Log\s*$/.test(l));
+  if (log >= 0) {
+    lines.splice(log, 0, "## Tasks", step, "");
+    return lines.join("\n");
+  }
+  return `${text.replace(/\s*$/, "")}\n\n## Tasks\n${step}\n`;
 }
 
 /**
@@ -273,7 +241,6 @@ export function applyPatch(p: ProjectInfo, patch: ProjectPatch): ProjectInfo {
   return {
     ...p,
     status: patch.status ?? p.status,
-    next: patch.next !== undefined ? patch.next.trim() : p.next,
     waitingOn: patch.waiting_on !== undefined ? patch.waiting_on.trim() : p.waitingOn,
     due: patch.due !== undefined ? patch.due : p.due,
     completed: patch.completed !== undefined ? patch.completed : p.completed,

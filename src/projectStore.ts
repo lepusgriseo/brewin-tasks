@@ -10,14 +10,15 @@ import {
   projectFromFrontmatter,
   ProjectStatus,
   statusPatch,
+  tagStep,
   tickStep,
-  untagStep,
   withLogEntry,
+  withNewStep,
   withProjectFields,
 } from "./projects";
 
 /**
- * The project notes' own fields — status, next action, waiting on, deadline — read from the
+ * The project notes' own fields — status, waiting on, deadline — read from the
  * metadata cache. Straight after the Planner writes a note the cache still holds the old
  * frontmatter, until Obsidian re-indexes it; so what was written is kept here and laid over the
  * cache until that note's own `changed` event says the cache has caught up.
@@ -48,22 +49,19 @@ export class ProjectStore {
     return this.write(p, { due: iso });
   }
 
-  setNext(p: ProjectInfo, next: string): Promise<ProjectInfo | null> {
-    return this.write(p, { next });
-  }
-
   /**
-   * Finish the next action, or choose one, in a single write: tick the step it was (when that was
-   * asked for), take `#next` off the step promoted in its place, log what was done under today,
-   * and set `next:`.
+   * Finish a next action, choose the one after it, or both — in a single write. The finished
+   * `#next` step is ticked with today's date and logged under today; the chosen step is tagged
+   * `#next`, or a typed one is added as a new `#next` step.
    */
-  advance(p: ProjectInfo, o: { done: boolean; tick: ProjectTask | null; promote: ProjectTask | null; next: string }): Promise<ProjectInfo | null> {
-    return this.write(p, { next: o.next }, (text) => {
+  advance(p: ProjectInfo, o: { done: ProjectTask | null; promote: ProjectTask | null; add: string }): Promise<ProjectInfo | null> {
+    return this.write(p, {}, (text) => {
       const lines = text.split("\n");
-      if (o.tick) tickStep(lines, o.tick.line, o.tick.raw, todayISO());
-      if (o.promote) untagStep(lines, o.promote.line, o.promote.raw);
-      const out = lines.join("\n");
-      return o.done && p.next ? withLogEntry(out, todayISO(), `Done: ${p.next}`) : out;
+      if (o.done) tickStep(lines, o.done.line, o.done.raw, todayISO());
+      if (o.promote) tagStep(lines, o.promote.line, o.promote.raw);
+      let out = lines.join("\n");
+      if (o.add.trim()) out = withNewStep(out, o.add);
+      return o.done ? withLogEntry(out, todayISO(), `Done: ${o.done.text}`) : out;
     });
   }
 

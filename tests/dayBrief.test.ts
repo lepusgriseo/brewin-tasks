@@ -25,7 +25,7 @@ function item(p: Partial<CalendarItem>): CalendarItem {
 }
 function project(p: Partial<ProjectInfo>, steps: { isNext: boolean }[] = []): DayProject {
   return {
-    info: { path: `03_Projects/${p.name ?? "P"}.md`, name: "P", status: "active", next: "", waitingOn: "", due: null, completed: null, ...p },
+    info: { path: `03_Projects/${p.name ?? "P"}.md`, name: "P", status: "active", waitingOn: "", due: null, completed: null, ...p },
     openSteps: steps,
   };
 }
@@ -66,8 +66,8 @@ test("dayBrief: the schedule keeps that day's non-task items, in the Calendar's 
 test("dayBrief: overdue, stalled and deadlines are only reported on today's note", () => {
   const projects = [
     project({ name: "Shed", due: "2026-10-25" }, [{ isNext: true }]),
-    project({ name: "EmuDeck" }), // active, no next, no #next step → stalled
-    project({ name: "Garden", next: "Buy compost", due: "2026-12-01" }), // deadline too far off
+    project({ name: "EmuDeck" }, [{ isNext: false }]), // active, no #next step → stalled
+    project({ name: "Garden", due: "2026-12-01" }, [{ isNext: true }]), // deadline too far off
     project({ name: "Tax return", status: "done", due: "2026-10-01" }),
   ];
   const today = dayBrief({ date: TODAY, today: TODAY, items: [], tasks, projects });
