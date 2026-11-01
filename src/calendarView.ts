@@ -78,6 +78,11 @@ export class CalendarView extends ItemView {
    * the next real tap.
    */
   private suppressClickUntil = 0;
+  /**
+   * The mouse range-select under way on a time column, if any. A press there starts both it and
+   * the hold-for-a-menu; whichever the press turns out to be ends the other.
+   */
+  private rangeSelect: { drawing: () => boolean; cancel: () => void } | null = null;
   private snapEl: HTMLElement | null = null;
   private renderToken = 0;
   /** Current-time indicators rendered this pass, nudged every minute. */
@@ -1248,7 +1253,19 @@ export class CalendarView extends ItemView {
       let to = from;
       let box: HTMLElement | null = null;
       const span = () => [Math.min(from, to), Math.max(from, to) + snap] as const;
+      const end = () => {
+        doc.removeEventListener("pointermove", move);
+        doc.removeEventListener("pointerup", up, true);
+        doc.removeEventListener("pointercancel", cancel, true);
+        box?.remove();
+        if (this.rangeSelect === select) this.rangeSelect = null;
+      };
+      const cancel = () => end();
+      const select = { drawing: () => !!box, cancel };
       const move = (m: PointerEvent) => {
+        // The button came up without a pointerup reaching us — a menu opened under the pointer
+        // takes the release — so the drag is over. Without this the block followed the mouse.
+        if (!(m.buttons & 1)) return cancel();
         if (!box && Math.abs(m.clientY - down.clientY) < 6) return;
         to = this.timeFromY(col, m.clientY);
         box ??= col.createDiv({ cls: "brewin-snap-preview brewin-range-preview" });
@@ -1258,15 +1275,18 @@ export class CalendarView extends ItemView {
         box.setText(`${formatHM(lo)}–${formatHM(hi)}`);
       };
       const up = (u: PointerEvent) => {
-        doc.removeEventListener("pointermove", move);
-        doc.removeEventListener("pointerup", up);
-        if (!box) return; // a click, not a drag
-        box.remove();
+        const drew = !!box;
+        end();
+        if (!drew) return; // a click, not a drag
         const [lo, hi] = span();
         this.createMenuAt(u.clientX, u.clientY, dateISO, formatHM(lo), formatHM(Math.min(hi, 24 * 60 - 1)));
       };
+      this.rangeSelect?.cancel();
+      this.rangeSelect = select;
       doc.addEventListener("pointermove", move);
-      doc.addEventListener("pointerup", up);
+      // Caught on the way down, so nothing under the pointer can stop it reaching us.
+      doc.addEventListener("pointerup", up, true);
+      doc.addEventListener("pointercancel", cancel, true);
     });
   }
 
@@ -1641,6 +1661,10 @@ export class CalendarView extends ItemView {
       holdMs: this.plugin.settings.dragHoldMs,
       onLongPress: (x, y, target) => {
         if (target instanceof HTMLElement && target.closest(exclude)) return;
+        // A mouse that has started marking out a block is dragging, not holding; one that hasn't
+        // has chosen the menu, so the range-select stops listening.
+        if (this.rangeSelect?.drawing()) return;
+        this.rangeSelect?.cancel();
         hapticTick();
         this.createMenuAt(x, y, dateISO, timeAt ? timeAt(y) : null);
       },
