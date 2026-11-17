@@ -11,6 +11,10 @@ const q = (expr: string) => `'${expr.replace(/'/g, "''")}'`;
 /** A property name Bases can take as it stands (`cost`); one with spaces or symbols is left out. */
 const plainName = (k: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k);
 
+/** A property's key under `properties:` and `summaries:`, where Obsidian wants a note property as
+ *  `note.<name>`; `formula.*` and `file.*` keys already say what they are. */
+const propKey = (k: string) => (/^(note|file|formula)\./.test(k) ? k : `note.${k}`);
+
 export function tasksBaseYaml(o: { itemsFolder: string; routinesFolder: string; attributes: readonly TaskAttribute[] }): string {
   const attrCols = o.attributes.filter((a) => plainName(a.key)).map((a) => a.key);
   const L: string[] = [];
@@ -24,7 +28,9 @@ export function tasksBaseYaml(o: { itemsFolder: string; routinesFolder: string; 
   // Priority is text, so sorting by it puts "low" before "normal"; this ranks it.
   L.push(`  rank: ${q('if(priority == "high", 1, if(priority == "low", 3, 2))')}`);
   L.push("properties:");
-  // Note properties by their bare names, as Obsidian itself saves a Base.
+  // Under `properties:` (and a view's `summaries:`) Obsidian keys a note property as `note.<name>`:
+  // with the bare name it ignores the displayName and the summary (checked in Obsidian 1.15.1,
+  // 2026-11-17). Filters, order, sort and groupBy take the bare name.
   const names: [string, string][] = [
     ["status", "Status"], ["flag", "Own status"], ["scheduled", "Scheduled"], ["due", "Due"],
     ["priority", "Priority"], ["contexts", "Contexts"], ["project", "Project"],
@@ -32,7 +38,7 @@ export function tasksBaseYaml(o: { itemsFolder: string; routinesFolder: string; 
     ["formula.overdue", "Overdue"], ["formula.rank", "Priority rank"],
     ...o.attributes.filter((a) => plainName(a.key)).map((a): [string, string] => [a.key, a.label]),
   ];
-  for (const [k, label] of names) L.push(`  ${k}:`, `    displayName: ${JSON.stringify(label)}`);
+  for (const [k, label] of names) L.push(`  ${propKey(k)}:`, `    displayName: ${JSON.stringify(label)}`);
 
   const view = (v: { type: string; name: string; filters?: string[]; anyOf?: string[]; order: string[]; sort?: [string, "ASC" | "DESC"][]; groupBy?: string; summaries?: Record<string, string> }) => {
     L.push(`  - type: ${v.type}`, `    name: ${JSON.stringify(v.name)}`);
@@ -53,7 +59,7 @@ export function tasksBaseYaml(o: { itemsFolder: string; routinesFolder: string; 
     }
     if (v.summaries) {
       L.push("    summaries:");
-      for (const [p, s] of Object.entries(v.summaries)) L.push(`      ${p}: ${s}`);
+      for (const [p, s] of Object.entries(v.summaries)) L.push(`      ${propKey(p)}: ${s}`);
     }
   };
 

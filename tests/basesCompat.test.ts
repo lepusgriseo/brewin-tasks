@@ -86,7 +86,19 @@ test("tasksBaseYaml: the settings' folders, plain-named attributes as columns, e
   assert.match(yaml, /- 'file\.inFolder\("Tasks\/Items"\)'/);
   assert.match(yaml, /- 'file\.inFolder\("Tasks\/Routines"\)'/);
   assert.match(yaml, /overdue: 'if\(status != "done" && due && due < today\(\), "⚠️ overdue", ""\)'/);
-  assert.match(yaml, /\n  cost:\n    displayName: "Cost"/);
+  // Under properties: and summaries:, note properties are `note.<name>`, or Obsidian ignores the
+  // label and the total; formula keys keep their own prefix.
+  assert.match(yaml, /\n  note\.cost:\n    displayName: "Cost"/);
+  assert.match(yaml, /\n  note\.status:\n    displayName: "Status"/);
+  assert.doesNotMatch(yaml, /^  (cost|status|time_spent):$/m);
+  assert.match(yaml, /\n  formula\.overdue:\n    displayName: "Overdue"/);
+  assert.match(yaml, /\n  formula\.rank:\n    displayName: "Priority rank"/);
+  assert.doesNotMatch(yaml, /note\.formula\.|note\.file\./);
+  assert.match(yaml, /\n    summaries:\n      note\.time_spent: Sum\n      note\.estimate: Sum\n/);
+  // Everywhere else a property is its bare name.
+  assert.match(yaml, /\n      - property: time_spent\n/);
+  assert.match(yaml, /\n    groupBy:\n      property: status\n/);
+  assert.match(yaml, /\n      - time_spent\n/);
   assert.doesNotMatch(yaml, /Needs parts/); // a name Bases can't take as it stands
   assert.equal((yaml.match(/^  - type: /gm) ?? []).length, 6);
   assert.match(yaml, /- 'completed >= today\(\) - "7d"'/);
